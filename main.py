@@ -1,15 +1,8 @@
-import sys, subprocess, os, re, datetime, sqlite3, streamlit as st
+import os, re, datetime, sqlite3, streamlit as st
 from io import BytesIO
-
-try:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter
-except ModuleNotFoundError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
@@ -23,7 +16,8 @@ def expand_serial_input(text):
     count, res = 0, []
     for p in parts:
         if '-' in p:
-            s, e = p.split('-').strip(), p.split('-').strip()
+            sub = p.split('-')
+            s, e = sub.strip(), sub.strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -36,7 +30,8 @@ def expand_serial_input(text):
 
 
 def generate_excel_bytes(session_data):
-    wb, ws = Workbook(), Workbook().active
+    wb = Workbook()
+    ws = wb.active
     ws.title = "Отчет за день"
     headers = ["наименование", "номер чертежа", "номер операции", "стоимость за единицу", "номера изделий",
                "количество", "общая стоимость (операция)", "общая сумма за смену"]
