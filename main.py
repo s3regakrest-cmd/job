@@ -17,7 +17,7 @@ def expand_serial_input(text):
     for p in parts:
         if '-' in p:
             sub = p.split('-')
-            s, e = sub.strip(), sub.strip()
+            s, e = sub[0].strip(), sub[1].strip()  # ИСПРАВЛЕНО: берем элементы списка по индексам
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -65,7 +65,7 @@ else:
     with sqlite3.connect('production.db') as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT name FROM items")
-        db_names = [r for r in cursor.fetchall()]
+        db_names = [r[0] for r in cursor.fetchall()]
 
     name = st.selectbox("Изделие:", db_names)
     ops_raw = st.text_input("Операции (через запятую):", placeholder="25, 45")
@@ -88,9 +88,8 @@ else:
                             "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)",
                             (name, f'{op},%', op))
                         res = cursor.fetchone()
-                        if res: found.append(
-                            {'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res)).strip(), 'price': float(res),
-                             'drawing': res})
+                        if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(),
+                                              'price': float(res[2]), 'drawing': res[0]})
 
                 if not found:
                     st.error("Операции не найдены.")
