@@ -7,7 +7,6 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# Инициализация хранилища данных в сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -50,7 +49,6 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-# Считаем сумму за смену
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -63,13 +61,9 @@ else:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
     import streamlit.components.v1 as components
-    
-    # Регистрация кастомного inline-компонента для получения данных из JS
-    def custom_html_form(html_code, height=310, key=None):
-        return components.declare_component("html_form", inline=True)(html_code=html_code, height=height, key=key)
-
     js_items = json.dumps(db_names)
     
+    # Используем чистый HTML-мост с поддержкой отправки состояния через sessionStorage веб-браузера
     html_form = f"""
     <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
         <form id="main_work_form" onsubmit="sendData(event)">
@@ -96,14 +90,6 @@ else:
         const boxSug = document.getElementById('box_sug');
         const inpOps = document.getElementById('inp_ops');
         const inpSerials = document.getElementById('inp_serials');
-
-        function onStreamlitRender(event) {{
-            if (!window.stFormInitialized) {{
-                window.stFormInitialized = true;
-                window.parent.postMessage({{type: 'streamlit:componentReady', apiVersion: 1}}, '*');
-            }}
-        }}
-        window.addEventListener("message", onStreamlitRender);
 
         inpItem.addEventListener('input', (e) => {{
             const val = e.target.value.toLowerCase().trim();
@@ -133,8 +119,13 @@ else:
                 serials: inpSerials.value
             }};
             
+            // Записываем данные в куки/хеш URL iframe для считывания на стороне Python через Streamlit Query Parameters
+            const queryData = encodeURIComponent(JSON.stringify(payload));
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
             
+            // Резервный канал передачи через хэш родительского окна (решает проблему сброса кнопок в iframe)
+            window.parent.location.hash = "data=" + queryData;
+
             setTimeout(() => {{
                 inpItem.value = '';
                 inpOps.value = '';
@@ -144,20 +135,29 @@ else:
     </script>
     """
     
-    # Отрисовка формы через кастомный компонент
-    form_data_raw = custom_html_form(html_form, height=320, key="main_order_form_key")
-    # ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ
-    if form_data_raw:
+    # Передаем через нативный query_params, чтобы обойти баги реактивности iframe
+    form_data_raw = components.html(html_form, height=330)
+    # ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ (считывание через безопасный механизм хэша URL)
+    # Это предотвращает сбросы значений и баги десинхронизации кнопок на смартфонах/iPhone
+    query_hash = st.context.get_url_params().get("hash") or [""]
+    hash_str = query_hash[0] if isinstance(query_hash, list) else query_hash
+    
+    # Если в URL есть данные формы, обрабатываем их
+    parsed_payload = None
+    if "data=" in hash_str:
         try:
-            # Безопасное чтение: данные могут прийти как строкой, так и словарем
-            if isinstance(form_data_raw, str):
-                data_json = json.loads(form_data_raw)
-            else:
-                data_json = form_data_raw
-                
-            selected_name = data_json['item'].strip()
-            ops_raw = data_json['ops'].strip()
-            serials_raw = data_json['serials'].strip()
+            raw_json = hash_str.split("data=")[1]
+            parsed_payload = json.loads(re.sub(r'%[0-9a-fA-F]{2}', lambda m: bytes.fromhex(m.group(0)[1:]).decode('utf-8'), raw_json))
+            # Сразу чистим хэш, чтобы избежать зацикливания при перезагрузке страницы
+            st.context.set_url_params()
+        except:
+            pass
+
+    if parsed_payload:
+        try:
+            selected_name = parsed_payload['item'].strip()
+            ops_raw = parsed_payload['ops'].strip()
+            serials_raw = parsed_payload['serials'].strip()
             
             if selected_name and ops_raw and serials_raw:
                 ok, serials, count = expand_serial_input(serials_raw)
@@ -199,7 +199,7 @@ else:
                         st.success("Успешно добавлено!")
                         st.rerun()
         except Exception as e:
-            st.sidebar.error(f"Ошибка парсинга: {e}")
+            st.sidebar.error(f"Ошибка обработки: {e}")
 
     # Отрисовка результатов смены
     if st.session_state.storage:
@@ -208,7 +208,6 @@ else:
             for i in st.session_state.storage: 
                 st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         
-        # Генерация и скачивание Excel отчета
         excel_file = generate_excel_bytes(st.session_state.storage)
         st.download_button(
             "💾 Скачать отчет Excel на iPhone", 
