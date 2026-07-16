@@ -1,1 +1,2 @@
-pip install streamlit openpyxl
+openpyxl
+streamlit-js-eval
