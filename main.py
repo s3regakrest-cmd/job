@@ -1,4 +1,4 @@
-import os, re, datetime, sqlite3, streamlit as st, streamlit.components.v1 as components
+import os, re, datetime, sqlite3, streamlit as st
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -55,9 +55,9 @@ def generate_excel_bytes(session_data):
     wb.save(f)
     return f.getvalue()
 
-# --- ИСПРАВЛЕНО: Явное указание пропорций колонок для st.columns ---
+# --- МЕТРИКА СУММЫ В ПРАВОМ ВЕРХНЕМ УГЛУ ---
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
-header_col, metric_col = st.columns([3, 1])
+header_col, metric_col = st.columns([2, 1])
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
@@ -69,28 +69,23 @@ else:
         cursor.execute("SELECT DISTINCT name FROM items")
         db_names = [r[0] for r in cursor.fetchall()]
 
-    # --- РЕАЛИЗАЦИЯ НАТИВНОГО САДЖЕСТА ДЛЯ IPHONE (DATALIST) ---
-    st.write("**Изделие:**")
+    # --- ИСПРАВЛЕННЫЙ ВАРИАНТ: ТЕКСТОВОЕ ПОЛЕ С ТЕКУЩИМ ИНЛАЙН-САДЖЕСТОМ ---
+    user_typed = st.text_input("Изделие:", value=st.session_state.item_name_val, placeholder="Введите название детали...").strip()
     
-    options_html = "".join([f'<option value="{name}">' for name in db_names])
-    html_code = f"""
-    <input type="text" id="item_input" list="items_list" value="{st.session_state.item_name_val}" placeholder="Начните писать название..." style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:16px; font-family:sans-serif; box-sizing:border-box;">
-    <datalist id="items_list">{options_html}</datalist>
-    <script>
-        const input = document.getElementById('item_input');
-        input.addEventListener('input', (e) => {{
-            window.parent.postMessage({{type: 'streamlit:setComponentValue', value: e.target.value}}, '*');
-        }});
-    </script>
-    """
+    selected_name = user_typed
     
-    raw_selected_name = components.html(html_code, height=45)
-    
-    if raw_selected_name is None:
-        selected_name = str(st.session_state.item_name_val)
-    else:
-        selected_name = str(raw_selected_name)
-        st.session_state.item_name_val = selected_name
+    # Если пользователь что-то пишет, ищем совпадения в базе на лету
+    if user_typed:
+        matches = [name for name in db_names if name.lower().startswith(user_typed.lower())]
+        if matches:
+            # Берем первое лучшее совпадение и предлагаем его пользователю
+            best_match = matches[0]
+            if best_match.lower() != user_typed.lower():
+                st.info(f"💡 Возможно, вы имели в виду: **{best_match}**?")
+                if st.button(f"👉 Подставить '{best_match}'", use_container_width=True):
+                    st.session_state.item_name_val = best_match
+                    st.rerun()
+            selected_name = best_match
 
     # Поля ввода операций и номеров изделий
     ops_raw = st.text_input("Операции (через запятую):", value=st.session_state.ops_val)
@@ -112,12 +107,12 @@ else:
                         res = cursor.fetchone()
                         if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
 
-                if not found: st.error("Операции не найдены в базе.")
+                if not found: st.error(f"Операции для изделия '{selected_name}' не найдены.")
                 else:
                     for o in found:
                         st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
                     
-                    # Автоматическое обнуление всех трех полей ввода при нажатии
+                    # Полное автоматическое обнуление полей ввода при успешном добавлении
                     st.session_state.ops_val = ""
                     st.session_state.serials_val = ""
                     st.session_state.item_name_val = ""
