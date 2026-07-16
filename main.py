@@ -1,4 +1,4 @@
-import os, re, datetime, sqlite3, streamlit as st
+import os, re, datetime, sqlite3, json, streamlit as st
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -7,11 +7,7 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ДЛЯ СБРОСА ПОЛЕЙ ---
 if 'storage' not in st.session_state: st.session_state.storage = []
-if 'ops_val' not in st.session_state: st.session_state.ops_val = ""
-if 'serials_val' not in st.session_state: st.session_state.serials_val = ""
-if 'search_query' not in st.session_state: st.session_state.search_query = ""
 
 def expand_serial_input(text):
     text = text.strip()
@@ -33,16 +29,14 @@ def expand_serial_input(text):
 def generate_excel_bytes(data):
     wb, ws = Workbook(), Workbook().active
     ws.title = "Отчет за день"
-    ws.append(["наименование", "номер чертежа", "номер операции", "стоимость за единицу", "номера изделий", "количество", "общая стоимость (операция)", "общая ... смену"])
+    ws.append(["наименование", "номер чертежа", "номер операции", "стоимость за единицу", "номера изделий", "количество", "общая стоимость (операция)", "общая сумма за смену"])
     for c in range(1, 9): ws.cell(row=1, column=c).font = Font(bold=True)
-    
     l_name, l_draw = "", ""
     for i in data:
         f_op = f"{i['op_num']} {i['desc']}"
         same = i['name'].lower() == l_name.lower() and i['drawing'] == l_draw
         ws.append(["" if same else i['name'], "" if same else i['drawing'], f_op, f"{i['price']:.2f} руб.", i['serials'], i['count'], f"{i['total']:.2f} руб.", ""])
         l_name, l_draw = i['name'], i['drawing']
-
     ws.cell(row=2, column=8).value = f"{sum(i['total'] for i in data):.2f} руб."
     for c in range(1, 9):
         ws.column_dimensions[get_column_letter(c)].width = max(max([len(str(ws.cell(row=r, column=c).value or '')) for r in range(1, ws.max_row + 1)]) + 4, 12)
@@ -50,7 +44,6 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-# --- МЕТРИКА СУММЫ В ПРАВОМ ВЕРХНЕМ УГЛУ ---
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -62,69 +55,109 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    # --- НАСТОЯЩИЙ ПОИСКОВЫЙ САДЖЕСТ НА ПЕРВОМ ПЛАНЕ ---
-    # st.text_input с мгновенным фокусом и клавиатурой
-    typed_text = st.text_input(
-        "Изделие:", 
-        value=st.session_state.search_query, 
-        placeholder="Введите название детали..."
-    ).strip()
+    import streamlit.components.v1 as components
+    js_items = json.dumps(db_names)
+    
+    html_form = f"""
+    <div style="font-family: sans-serif; width: 100%; box-sizing: border-box;">
+        <form id="main_work_form" onsubmit="sendData(event)">
+            <div style="position: relative; margin-bottom: 15px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Изделие:</label>
+                <input type="text" id="inp_item" placeholder="Начните писать..." autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+                <div id="box_sug" style="position: absolute; top: 100%; left: 0; width: 100%; background: white; border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: none; z-index: 999999; max-height: 180px; overflow-y: auto;"></div>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Операции:</label>
+                <input type="text" id="inp_ops" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+            </div>
+            <div style="margin-bottom: 20px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Номера изделий:</label>
+                <input type="text" id="inp_serials" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+            </div>
+            <button type="submit" style="width: 100%; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
+        </form>
+    </div>
 
-    selected_name = typed_text
+    <script>
+        const items = {js_items};
+        const inpItem = document.getElementById('inp_item');
+        const boxSug = document.getElementById('box_sug');
+        const inpOps = document.getElementById('inp_ops');
+        const inpSerials = document.getElementById('inp_serials');
 
-    # Выдвижное меню подсказок прямо на первом плане
-    if typed_text:
-        matches = [name for name in db_names if typed_text.lower() in name.lower()]
-        
-        # Если нашли совпадения и пользователь еще не выбрал точное слово
-        if matches and (len(matches) > 1 or matches[0].lower() != typed_text.lower()):
-            # Создаем красивый выпадающий блок-контейнер
-            with st.container(border=True):
-                st.write("📋 *Варианты из базы данных:*")
-                for match in matches[:5]: # Показываем топ-5 совпадений
-                    # Кнопки оформлены как строки выпадающего меню
-                    if st.button(f"🔍 {match}", key=f"btn_{match}", use_container_width=True):
-                        st.session_state.search_query = match
-                        st.rerun()
+        inpItem.addEventListener('input', (e) => {{
+            const val = e.target.value.toLowerCase().trim();
+            boxSug.innerHTML = '';
+            if (!val) {{ boxSug.style.display = 'none'; return; }}
+            const m = items.filter(i => i.toLowerCase().startsWith(val));
+            if (m.length) {{
+                m.forEach(i => {{
+                    const d = document.createElement('div'); d.textContent = i;
+                    d.style.padding = '12px 10px'; d.style.cursor = 'pointer'; d.style.borderBottom = '1px solid #eee';
+                    d.onmouseenter = () => d.style.background = '#f5f5f5';
+                    d.onmouseleave = () => d.style.background = 'white';
+                    d.onclick = () => {{ inpItem.value = i; boxSug.style.display = 'none'; }};
+                    boxSug.appendChild(d);
+                }});
+                boxSug.style.display = 'block';
+            }} else {{ boxSug.style.display = 'none'; }}
+        }});
 
-    # Поля ввода операций и номеров изделий
-    ops_raw = st.text_input("Операции:", value=st.session_state.ops_val)
-    serials_raw = st.text_input("Номера изделий:", value=st.session_state.serials_val)
+        document.addEventListener('click', (e) => {{ if (e.target !== inpItem) boxSug.style.display = 'none'; }});
 
-    if st.button("➕ Рассчитать и добавить", use_container_width=True):
-        if not selected_name or not ops_raw or not serials_raw: 
-            st.warning("Заполните все поля ввода!")
-        else:
-            ok, serials, count = expand_serial_input(serials_raw)
-            if not ok: st.error(serials)
-            else:
-                ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                found = []
-                with sqlite3.connect('production.db') as conn:
-                    for op in ops:
-                        res = conn.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op)).fetchone()
-                        if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
-                
-                if not found: st.error("Операции не найдены.")
+        function sendData(e) {{
+            e.preventDefault();
+            const payload = {{
+                item: inpItem.value,
+                ops: inpOps.value,
+                serials: inpSerials.value
+            }};
+            window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
+            inpItem.value = '';
+            inpOps.value = '';
+            inpSerials.value = '';
+        }}
+    </script>
+    """
+    
+    form_data_raw = components.html(html_form, height=310)
+
+    if form_data_raw:
+        try:
+            data_json = json.loads(form_data_raw)
+            selected_name = data_json['item'].strip()
+            ops_raw = data_json['ops'].strip()
+            serials_raw = data_json['serials'].strip()
+            
+            if selected_name and ops_raw and serials_raw:
+                ok, serials, count = expand_serial_input(serials_raw)
+                if not ok: st.error(serials)
                 else:
-                    for o in found: 
-                        st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
-                    
-                    # ПОЛНОЕ АВТОМАТИЧЕСКОЕ ОБНУЛЕНИЕ ВСЕХ ПОЛЕЙ
-                    st.session_state.ops_val = ""
-                    st.session_state.serials_val = ""
-                    st.session_state.search_query = ""
-                    st.success("Успешно добавлено!")
-                    st.rerun()
+                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                    found = []
+                    with sqlite3.connect('production.db') as conn:
+                        cursor = conn.cursor()
+                        for op in ops:
+                            cursor.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op))
+                            res = cursor.fetchone()
+                            if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
 
-    # --- КНОПКА ПОДРОБНЕЕ ДЛЯ СКРЫТИЯ ДАННЫХ ---
+                    if not found: st.error(f"Операции {ops_raw} для '{selected_name}' не найдены.")
+                    else:
+                        for o in found:
+                            st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
+                        st.success("Успешно добавлено!")
+                        st.rerun()
+        except:
+            pass
+
     if st.session_state.storage:
         st.write("---")
         with st.expander("🔍 Подробнее"):
             for i in st.session_state.storage: st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         st.download_button("💾 Скачать отчет Excel на iPhone", generate_excel_bytes(st.session_state.storage), f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if st.button("🗑️ Сбросить смену", use_container_width=True):
-            st.session_state.storage, st.session_state.ops_val, st.session_state.serials_val, st.session_state.search_query = [], "", "", ""
+            st.session_state.storage = []
             st.rerun()
 
     st.write("---")
