@@ -56,25 +56,25 @@ header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
-# Подключение к Google Таблице
+# Безопасное чтение живой Google Таблицы
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    df = conn.read(spreadsheet=st.secrets["public_gsheets_url"], ttl="10m")
+    df = conn.read(spreadsheet=st.secrets["public_gsheets_url"], ttl="5m")
     db_names = df["name"].dropna().unique().tolist()
 except Exception as e:
     st.error(f"Не удалось подключиться к Google Таблице: {e}")
     db_names = []
 
-# Форма Streamlit (Блок полностью изолирован)
+# Чистая форма ввода
 with st.form(key="main_order_form", clear_on_submit=True):
     selected_name = st.text_input("Изделие")
     ops_raw = st.text_input("Операции")
     serials_raw = st.text_input("Номера изделий")
     submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
-# ОБРАБОТКА НАЖАТИЯ КНОПКИ (Обратите внимание: этот блок идет без отступов, вне st.form)
+# ОБРАБОТКА ДАННЫХ (Вне контекста формы)
 if submit_button:
     if not db_names:
-        st.error("База данных пуста или недоступна.")
+        st.error("База данных временно недоступна.")
     elif not selected_name.strip():
         st.error("Пожалуйста, введите наименование изделия!")
     elif not ops_raw.strip():
@@ -89,7 +89,7 @@ if submit_button:
         name_exists = any(selected_name.lower() == str(name).lower() for name in db_names)
         
         if not name_exists:
-            st.error(f"Изделие '{selected_name}' не найдено в вашей Google Таблице!")
+            st.error(f"Изделие '{selected_name}' не найдено в Google Таблице!")
         else:
             for name in db_names:
                 if selected_name.lower() == str(name).lower():
@@ -139,7 +139,7 @@ if submit_button:
                     st.success("Успешно добавлено!")
                     st.rerun()
 
-# Отрисовка результатов текущей смены (Теперь кнопка скачивания работает легально)
+# Отрисовка результатов текущей смены
 if st.session_state.storage:
     st.write("---")
     with st.expander("🔍 Подробнее", expanded=True):
@@ -160,5 +160,4 @@ if st.session_state.storage:
         st.rerun()
 
 st.write("---")
-with st.expander("🔐 Информация о базе данных"):
-    st.info("Данные успешно синхронизированы с вашей онлайн Google Таблицей. Чтобы добавить новые изделия или изменить расценки, просто отредактируйте исходный файл в вашем Google Диске.")
+st.caption("Данные калькулятора успешно синхронизированы с Google Таблицей. Новые изделия и цены добавляются напрямую в файл на вашем Google Диске.")
