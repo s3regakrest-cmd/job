@@ -7,6 +7,7 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
+# Инициализация хранилища данных в сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -19,12 +20,16 @@ def expand_serial_input(text):
     for p in parts:
         if '-' in p:
             sub = p.split('-')
+            if len(sub) != 2: return False, f"Ошибка в диапазоне: '{p}'", 0
             s, e = sub[0].strip(), sub[1].strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
-        elif p.isdigit(): count += 1; res.append(str(int(p)))
-        else: return False, f"Ошибка в: '{p}'", 0
+        elif p.isdigit(): 
+            count += 1
+            res.append(str(int(p)))
+        else: 
+            return False, f"Ошибка в: '{p}'", 0
     return True, ", ".join(res), count
 
 def generate_excel_bytes(data):
@@ -46,6 +51,7 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
+# Считаем сумму за смену
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -57,84 +63,86 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    import streamlit.components.v1 as components
-    js_items = json.dumps(db_names)
-    
-    html_path = os.path.join(os.path.dirname(__file__), 'autocomplete.html') if '__file__' in locals() else 'autocomplete.html'
-    if os.path.exists(html_path):
-        with open(html_path, 'r', encoding='utf-8') as f:
-            html_template = f.read()
+    # Создаем форму Streamlit. clear_on_submit=True очистит все поля ТОЛЬКО после успешного расчета
+    with st.form(key="main_order_form", clear_on_submit=True):
+        st.write("**Добавление новой записи**")
         
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем флаг успешного сохранения только через st.query_params
-        if st.query_params.get("saved") == "1":
-            html_form = html_template.replace("window.location.href.includes('clear=true')", "true")
+        # Текстовое поле, в котором можно свободно и быстро писать руками любое название
+        selected_name = st.text_input("Изделие (введите название):", placeholder="Введите наименование детали...")
+        
+        # Дополнительная шпаргалка под полем ввода, чтобы всегда можно было подсмотреть точное название
+        with st.expander("📋 Показать список всех изделий из базы для проверки"):
+            st.caption(", ".join(db_names))
+            
+        ops_raw = st.text_input("Операции (через запятую):", placeholder="Например: 10, 20")
+        serials_raw = st.text_input("Номера изделий:", placeholder="Например: 101-105, 107 или today")
+        
+        submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
+    # ОБРАБОТКА НАЖАТИЯ КНОПКИ ФОРМЫ
+    if submit_button:
+        if not selected_name.strip():
+            st.error("Пожалуйста, введите наименование изделия!")
+        elif not ops_raw.strip():
+            st.error("Пожалуйста, укажите номера операций!")
+        elif not serials_raw.strip():
+            st.error("Пожалуйста, укажите номера изделий!")
         else:
-            html_form = html_template.replace("window.location.href.includes('clear=true')", "false")
+            selected_name = selected_name.strip()
+            ops_raw = ops_raw.strip()
+            serials_raw = serials_raw.strip()
             
-        html_form = html_form.replace('__ITEMS_PLACEHOLDER__', js_items)
-        
-        # Вывод HTML формы на экран
-        components.html(html_form, height=330)
-    else:
-        st.error("Файл 'autocomplete.html' не найден рядом со скриптом main.py!")
-    # ОБРАБОТКА ДАННЫХ ИЗ URL СРЕДСТВАМИ STREAMLIT
-    q_item = st.query_params.get("item", "").strip()
-    q_ops = st.query_params.get("ops", "").strip()
-    q_serials = st.query_params.get("serials", "").strip()
-
-    if q_item and q_ops and q_serials:
-        try:
-            # Очищаем параметры URL, чтобы добавление не шло бесконечно по кругу
-            st.query_params.clear()
+            # Проверяем, существует ли написанное пользователем изделие в базе (регистронезависимо)
+            name_exists = any(selected_name.lower() == name.lower() for name in db_names)
             
-            ok, serials, count = expand_serial_input(q_serials)
-            if not ok: 
-                st.error(serials)
+            if not name_exists:
+                st.error(f"Изделие '{selected_name}' не найдено в базе данных! Проверьте правильность написания.")
             else:
-                ops = [o.strip() for o in q_ops.split(',') if o.strip()]
-                found = []
-                with sqlite3.connect('production.db') as conn:
-                    cursor = conn.cursor()
-                    for op in ops:
-                        cursor.execute(
-                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                            (q_item, f'{op},%', f'{op} %', op)
-                        )
-                        res = cursor.fetchone()
-                        if res: 
-                            # ТОЧНЫЕ ИНДЕКСЫ КОРТЕЖА: 0 = чертеж, 1 = описание, 2 = цена
-                            found.append({
-                                'op_num': op, 
-                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                'price': float(res[2]), 
-                                'drawing': str(res[0])
-                            })
-
-                if not found: 
-                    st.error(f"Операции {q_ops} для изделия '{q_item}' не найдены в базе данных.")
+                # Находим точное имя из базы, чтобы избежать конфликтов с регистром букв в SQL
+                for name in db_names:
+                    if selected_name.lower() == name.lower():
+                        selected_name = name
+                        break
+                
+                ok, serials, count = expand_serial_input(serials_raw)
+                if not ok: 
+                    st.error(serials)
                 else:
-                    for o in found:
-                        st.session_state.storage.append({
-                            'name': q_item, 
-                            'drawing': o['drawing'], 
-                            'op_num': o['op_num'], 
-                            'desc': o['desc'], 
-                            'price': o['price'], 
-                            'serials': serials, 
-                            'count': count, 
-                            'total': o['price'] * count
-                        })
-                    
-                    # Передаем форме флаг saved=1, чтобы она знала, что пора очистить инпуты
-                    st.query_params["saved"] = "1"
-                    st.success("Успешно добавлено!")
-                    st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"Ошибка сохранения: {e}")
+                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                    found = []
+                    with sqlite3.connect('production.db') as conn:
+                        cursor = conn.cursor()
+                        for op in ops:
+                            # Оптимальный поиск: находит операцию, даже если в базе запись вида '10, Токарная' или '10 Токарная'
+                            cursor.execute(
+                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                                (selected_name, f'{op},%', f'{op} %', op)
+                            )
+                            res = cursor.fetchone()
+                            if res: 
+                                # ТОЧНЫЕ ИНДЕКСЫ КОРТЕЖА ИЗ БАЗЫ: 0 = чертеж, 1 = описание, 2 = цена
+                                found.append({
+                                    'op_num': op, 
+                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                    'price': float(res[2]), 
+                                    'drawing': str(res[0])
+                                })
 
-    # Блок очистки временного флага saved при следующем рендере страницы
-    if st.query_params.get("saved") == "1":
-        st.query_params.clear()
+                    if not found: 
+                        st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в базе данных.")
+                    else:
+                        for o in found:
+                            st.session_state.storage.append({
+                                'name': selected_name, 
+                                'drawing': o['drawing'], 
+                                'op_num': o['op_num'], 
+                                'desc': o['desc'], 
+                                'price': o['price'], 
+                                'serials': serials, 
+                                'count': count, 
+                                'total': o['price'] * count
+                            })
+                        st.success("Успешно добавлено!")
+                        st.rerun() # Мгновенно обновляем страницу: сумма пересчитается, а форма сама очистится
 
     # Отрисовка результатов текущей смены
     if st.session_state.storage:
@@ -143,6 +151,7 @@ else:
             for i in st.session_state.storage: 
                 st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         
+        # Кнопка скачивания отчета Excel
         excel_file = generate_excel_bytes(st.session_state.storage)
         st.download_button(
             "💾 Скачать отчет Excel на iPhone", 
