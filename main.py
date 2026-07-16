@@ -4,15 +4,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-# --- НАСТРОЙКИ ---
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 DB_PATH = 'production.db'
 
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 @st.cache_data(ttl=300)
 def get_items_from_db():
@@ -30,27 +27,26 @@ def generate_excel_bytes(data):
     ws = wb.active
     ws.title = "Отчет за день"
     
-    headers = ["наименование", "номер чертежа", "номер операции", "стоимость за единицу", 
-               "номера изделий", "количество", "общая стоимость (операция)", "общая сумма за смену"]
+    headers = [
+        "наименование", "номер чертежа", "номер операции", "стоимость за единицу",
+        "номера изделий", "количество", "общая стоимость (операция)", "общая сумма за смену"
+    ]
     ws.append(headers)
-    
     for c in range(1, 9): 
         ws.cell(row=1, column=c).font = Font(bold=True)
     
     l_name, l_draw = "", ""
-    
     for i in data:
         f_op = f"{i['op_num']} {i['desc']}"
         same = i['name'].lower() == l_name.lower() and i['drawing'] == l_draw
-        
         row_data = [
-            "" if same else i['name'], 
-            "" if same else i['drawing'], 
-            f_op, 
-            f"{i['price']:.2f} руб.", 
-            i['serials'], 
-            i['count'], 
-            f"{i['total']:.2f} руб.", 
+            "" if same else i['name'],
+            "" if same else i['drawing'],
+            f_op,
+            f"{i['price']:.2f} руб.",
+            i['serials'],
+            i['count'],
+            f"{i['total']:.2f} руб.",
             ""
         ]
         ws.append(row_data)
@@ -87,7 +83,6 @@ def expand_serial_input(text):
             s, e = sub[0].strip(), sub[1].strip()
             if len(e) < len(s): 
                 e = s[:len(s) - len(e)] + e
-            
             try:
                 start_int = int(s)
                 end_int = int(e)
@@ -114,7 +109,7 @@ def init_db_indexes():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_desc ON items(work_description)")
         conn.commit()
 
-# --- ОСНОВНАЯ ЛОГИКА ---
+# --- Основная логика ---
 
 if not os.path.exists(DB_PATH):
     st.error(f"Файл базы данных '{DB_PATH}' не найден!")
@@ -123,26 +118,27 @@ else:
 
 db_names = get_items_from_db()
 
+# Форма: только поля и кнопка. Никаких сообщений внутри формы.
 with st.form("order_form", clear_on_submit=True):
     col1, col2 = st.columns([3, 1])
-    
     with col1:
         item = st.text_input("Изделие", placeholder="Начните вводить название...", autocomplete="off")
         ops_input = st.text_input("Операции (через запятую)", placeholder="10, 20, 30")
         serials_input = st.text_input("Номера изделий", placeholder="101-110 или 101,102,103 или 'today'")
-    
     with col2:
         st.write("")
         submitted = st.form_submit_button("➕ Рассчитать и добавить", type="primary", use_container_width=True)
 
+# Обработка после отправки формы — ровно один блок сообщений
 if submitted:
-    # Важно: не делаем st.rerun() здесь. Streamlit сам перерисует страницу после обработки формы.
+    msg_area = st.empty()  # Заглушка, чтобы потом заменить одним сообщением
+    
     if not item or not ops_input or not serials_input:
-        st.warning("Пожалуйста, заполните все поля формы.")
+        msg_area.warning("Пожалуйста, заполните все поля формы.")
     else:
         ok, serials_str, count = expand_serial_input(serials_input)
         if not ok:
-            st.error(serials_str)
+            msg_area.error(serials_str)
         else:
             ops_list = [o.strip() for o in ops_input.split(',') if o.strip()]
             found_ops = []
@@ -155,11 +151,9 @@ if submitted:
                         (item, f"{op}%")
                     )
                     res = cursor.fetchone()
-                    
                     if res:
                         desc_raw = str(res[1])
                         clean_desc = re.sub(r'^\d+\s*,\s*', '', desc_raw).strip()
-                        
                         found_ops.append({
                             'op_num': op, 
                             'desc': clean_desc, 
@@ -168,7 +162,7 @@ if submitted:
                         })
             
             if not found_ops:
-                st.error(f"Операции '{ops_input}' для изделия '{item}' не найдены в базе.")
+                msg_area.error(f"Операции '{ops_input}' для изделия '{item}' не найдены в базе.")
             else:
                 for o in found_ops:
                     st.session_state.storage.append({
@@ -181,8 +175,8 @@ if submitted:
                         'count': count, 
                         'total': o['price'] * count
                     })
-                # Просто показываем сообщение. Страница обновится сама.
-                st.success("Заказ успешно добавлен!")
+                msg_area.success("Заказ успешно добавлен!")
+                # Не делаем st.rerun() здесь: форма уже очищена clear_on_submit, состояние обновлено
 
 st.write("---")
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
@@ -197,7 +191,6 @@ if st.session_state.storage:
     with st.expander("🔍 Подробнее", expanded=True):
         for i in to_show: 
             st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
-        
         if len(st.session_state.storage) > MAX_SHOW:
             st.caption(f"Показано последние {MAX_SHOW} из {len(st.session_state.storage)} записей.")
 
@@ -210,7 +203,6 @@ if st.session_state.storage:
         use_container_width=True
     )
     
-    # Сброс смены: только тут нужен rerun, потому что мы очищаем session_state
     if st.button("🗑️ Сбросить смену", use_container_width=True, type="secondary"):
         st.session_state.storage = []
         st.rerun()
@@ -237,14 +229,11 @@ with st.expander("🔐 Редактор базы данных"):
                         )
                         conn.commit()
                     st.success("Успешно добавлено в базу данных!")
-                    # Здесь rerun нужен, чтобы обновился список автодополнения
-                    st.rerun()
+                    st.rerun()  # Тут rerun нужен: кэш автодополнения обновится
                 except Exception as e:
                     st.error(f"Ошибка при записи в БД: {e}")
     elif pwd:
         st.error("Неверный пароль администратора")
 
 if not os.path.exists(DB_PATH):
-    st.info("""
-    Для работы приложения требуется файл `production.db` с таблицей `items`.
-    """)
+    st.info("Для работы приложения требуется файл `production.db` с таблицей `items`.")
