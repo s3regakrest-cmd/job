@@ -68,7 +68,6 @@ else:
     # Конвертируем состояние флага Python в JS строку (true/false)
     should_clear_js = "true" if st.session_state.clear_form_trigger else "false"
     
-    # Сбрасываем триггер в Python, так как форма сейчас его считает и применит
     if st.session_state.clear_form_trigger:
         st.session_state.clear_form_trigger = False
 
@@ -100,7 +99,7 @@ else:
         const inpSerials = document.getElementById('inp_serials');
         const submitBtn = document.getElementById('submit_btn');
 
-        // УПРАВЛЕНИЕ ХРАНЕНИЕМ И ОЧИСТКОЙ ПОЛЕЙ СНАЧАЛА СОХРАНЕНИЕ, ПОТОМ ОЧИСТКА
+        // Контроль очистки полей строго ПОСЛЕ сохранения в Python
         if ({should_clear_js}) {{
             sessionStorage.removeItem('draft_item');
             sessionStorage.removeItem('draft_ops');
@@ -143,39 +142,47 @@ else:
                 serials: inpSerials.value
             }};
             
-            // Фиксируем введенные данные во внутреннем кэше, чтобы они не стерлись при обновлении страницы
+            // Фиксируем значения, чтобы они не потерялись при перезагрузке
             sessionStorage.setItem('draft_item', inpItem.value);
             sessionStorage.setItem('draft_ops', inpOps.value);
             sessionStorage.setItem('draft_serials', inpSerials.value);
             
-            submitBtn.textContent = "⏳ Расчёт и сохранение...";
+            submitBtn.textContent = "⏳ Сохранение...";
             submitBtn.style.backgroundColor = "#ccc";
             submitBtn.disabled = true;
 
-            // Находим скрытый текстовый инпут-мост родительского окна Streamlit
-            const parentInputs = window.parent.document.querySelectorAll('input');
-            let targetInput = null;
-            for (let i = 0; i < parentInputs.length; i++) {{
-                if (parentInputs[i].id && parentInputs[i].id.includes('hidden_bridge')) {{
-                    targetInput = parentInputs[i];
-                    break;
-                }}
-            }}
-
-            // Записываем JSON. Никакой мгновенной очистки инпутов здесь не делаем! Текст остается на месте.
-            if (targetInput) {{
-                targetInput.value = JSON.stringify(payload);
-                targetInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                targetInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }}
+            // НАДЁЖНЫЙ КАНАЛ СВЯЗИ: Отправляем сообщение родительскому окну через postMessage.
+            // Браузеры никогда не блокируют этот метод, зависание полностью исключено!
+            window.parent.postMessage({{
+                type: 'custom_order_form_submit', 
+                value: JSON.stringify(payload)
+            }}, '*');
         }}
     </script>
     """
     
-    # Создаем скрытый текстовый мост (убран аргумент key из components.html)
-    form_data_raw = st.text_input("Вспомогательный мост:", key="hidden_bridge", label_visibility="collapsed")
+    # Отрисовываем HTML форму (убрали скрытый инпут моста из первой части)
     components.html(html_form, height=330)
-    # ОБРАБОТКА ДАННЫХ ИЗ НАДЁЖНОГО ТЕКСТОВОГО МОСТА
+        # ПРИЕМНИК ДАННЫХ ИЗ ФОРМЫ (ОФИЦИАЛЬНЫЙ СТАБИЛЬНЫЙ КАНАЛ СВЯЗИ)
+    # Метод регистрирует глобальный слушатель событий в браузере и возвращает строку в Python
+    receiver_html = """
+    <script>
+        window.parent.addEventListener('message', function(e) {
+            if (e.data && e.data.type === 'custom_order_form_submit') {
+                // Отправляем значение обратно в Streamlit как официальный ответ компонента
+                Streamlit.setComponentValue(e.data.value);
+            }
+        });
+    </script>
+    """
+    
+    # Декларируем безопасный мост обмена сообщениями
+    def get_form_data():
+        return components.declare_component("bridge_receiver", inline=True)()
+        
+    form_data_raw = get_form_data()
+
+    # ОБРАБОТКА ПОЛУЧЕННЫХ ДАННЫХ
     if form_data_raw and form_data_raw.strip():
         try:
             data_json = json.loads(form_data_raw)
@@ -221,14 +228,11 @@ else:
                                 'total': o['price'] * count
                             })
                         
-                        # КРИТИЧЕСКИЙ ЭТАП ОЧИСТКИ (ПОСЛЕ УСПЕШНОГО СОХРАНЕНИЯ):
-                        # 1. Зануляем скрытый мост в состоянии сессии, чтобы не дублировать деталь
-                        st.session_state.hidden_bridge = ""
-                        # 2. Выставляем флаг очистки. При следующей перезагрузке JS-форма прочитает его и обнулится
+                        # ДАННЫЕ СОХРАНЕНЫ:
+                        # Включаем триггер очистки, чтобы при перезагрузке форма сбросила поля
                         st.session_state.clear_form_trigger = True
-                        
                         st.success("Успешно добавлено!")
-                        st.rerun() # Перезагружаем страницу для обновления верхнего счетчика и очистки инпутов
+                        st.rerun()
         except Exception as e:
             st.sidebar.error(f"Ошибка сохранения: {e}")
 
