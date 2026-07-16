@@ -63,7 +63,7 @@ else:
         <form id="main_work_form" onsubmit="sendData(event)">
             <div style="position: relative; margin-bottom: 15px;">
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Изделие:</label>
-                <input type="text" id="inp_item" placeholder="Начните писать..." autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+                <input type="text" id="inp_item" autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
                 <div id="box_sug" style="position: absolute; top: 100%; left: 0; width: 100%; background: white; border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: none; z-index: 999999; max-height: 180px; overflow-y: auto;"></div>
             </div>
             <div style="margin-bottom: 15px;">
@@ -74,7 +74,7 @@ else:
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Номера изделий:</label>
                 <input type="text" id="inp_serials" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
             </div>
-            <button type="submit" style="width: 100%; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
+            <button type="submit" style="width: 100%; background-color: rgb(255, 75, 75); color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
         </form>
     </div>
 
