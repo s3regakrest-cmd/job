@@ -7,13 +7,8 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# Инициализация хранилища данных в сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
-
-# Переменная-флаг для очистки формы после успешного сохранения
-if 'clear_form_trigger' not in st.session_state:
-    st.session_state.clear_form_trigger = False
 
 def expand_serial_input(text):
     text = text.strip()
@@ -29,7 +24,7 @@ def expand_serial_input(text):
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
         elif p.isdigit(): count += 1; res.append(str(int(p)))
-        else: return False, f"Ошибка в: '{p}'", 0
+        else: return False, f"Ошибка in: '{p}'", 0
     return True, ", ".join(res), count
 
 def generate_excel_bytes(data):
@@ -65,12 +60,6 @@ else:
     import streamlit.components.v1 as components
     js_items = json.dumps(db_names)
     
-    # Конвертируем состояние флага Python в JS строку (true/false)
-    should_clear_js = "true" if st.session_state.clear_form_trigger else "false"
-    
-    if st.session_state.clear_form_trigger:
-        st.session_state.clear_form_trigger = False
-
     html_form = f"""
     <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
         <form id="main_work_form" onsubmit="sendData(event)">
@@ -98,20 +87,6 @@ else:
         const inpOps = document.getElementById('inp_ops');
         const inpSerials = document.getElementById('inp_serials');
         const submitBtn = document.getElementById('submit_btn');
-
-        // Контроль очистки полей строго ПОСЛЕ сохранения в Python
-        if ({should_clear_js}) {{
-            sessionStorage.removeItem('draft_item');
-            sessionStorage.removeItem('draft_ops');
-            sessionStorage.removeItem('draft_serials');
-            inpItem.value = '';
-            inpOps.value = '';
-            inpSerials.value = '';
-        }} else {{
-            inpItem.value = sessionStorage.getItem('draft_item') || '';
-            inpOps.value = sessionStorage.getItem('draft_ops') || '';
-            inpSerials.value = sessionStorage.getItem('draft_serials') || '';
-        }}
 
         inpItem.addEventListener('input', (e) => {{
             const val = e.target.value.toLowerCase().trim();
@@ -142,97 +117,71 @@ else:
                 serials: inpSerials.value
             }};
             
-            // Фиксируем значения, чтобы они не потерялись при перезагрузке
-            sessionStorage.setItem('draft_item', inpItem.value);
-            sessionStorage.setItem('draft_ops', inpOps.value);
-            sessionStorage.setItem('draft_serials', inpSerials.value);
-            
-            submitBtn.textContent = "⏳ Сохранение...";
+            submitBtn.textContent = "⏳ Добавление...";
             submitBtn.style.backgroundColor = "#ccc";
             submitBtn.disabled = true;
 
-            // НАДЁЖНЫЙ КАНАЛ СВЯЗИ: Отправляем сообщение родительскому окну через postMessage.
-            // Браузеры никогда не блокируют этот метод, зависание полностью исключено!
-            window.parent.postMessage({{
-                type: 'custom_order_form_submit', 
-                value: JSON.stringify(payload)
-            }}, '*');
+            // Самый безопасный веб-интерфейс связи: кодируем в URL параметры Streamlit. 
+            // Это никогда не блокируется и не вызывает зависаний!
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set('item', inpItem.value);
+            url.searchParams.set('ops', inpOps.value);
+            url.searchParams.set('serials', inpSerials.value);
+            window.parent.location.href = url.toString();
         }}
     </script>
     """
     
-    # Отрисовываем HTML форму (убрали скрытый инпут моста из первой части)
     components.html(html_form, height=330)
-        # ПРИЕМНИК ДАННЫХ ИЗ ФОРМЫ (ОФИЦИАЛЬНЫЙ СТАБИЛЬНЫЙ КАНАЛ СВЯЗИ)
-    # Метод регистрирует глобальный слушатель событий в браузере и возвращает строку в Python
-    receiver_html = """
-    <script>
-        window.parent.addEventListener('message', function(e) {
-            if (e.data && e.data.type === 'custom_order_form_submit') {
-                // Отправляем значение обратно в Streamlit как официальный ответ компонента
-                Streamlit.setComponentValue(e.data.value);
-            }
-        });
-    </script>
-    """
-    
-    # Декларируем безопасный мост обмена сообщениями
-    def get_form_data():
-        return components.declare_component("bridge_receiver", inline=True)()
-        
-    form_data_raw = get_form_data()
+    # ОБРАБОТКА ПАРАМЕТРОВ ИЗ URL
+    q_item = st.query_params.get("item", "").strip()
+    q_ops = st.query_params.get("ops", "").strip()
+    q_serials = st.query_params.get("serials", "").strip()
 
-    # ОБРАБОТКА ПОЛУЧЕННЫХ ДАННЫХ
-    if form_data_raw and form_data_raw.strip():
+    if q_item and q_ops and q_serials:
         try:
-            data_json = json.loads(form_data_raw)
-            selected_name = data_json['item'].strip()
-            ops_raw = data_json['ops'].strip()
-            serials_raw = data_json['serials'].strip()
+            # Сразу чистим параметры URL, чтобы добавление не шло по кругу при F5
+            st.query_params.clear()
             
-            if selected_name and ops_raw and serials_raw:
-                ok, serials, count = expand_serial_input(serials_raw)
-                if not ok: 
-                    st.error(serials)
-                else:
-                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                    found = []
-                    with sqlite3.connect('production.db') as conn:
-                        cursor = conn.cursor()
-                        for op in ops:
-                            cursor.execute(
-                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                                (selected_name, f'{op},%', f'{op} %', op)
-                            )
-                            res = cursor.fetchone()
-                            if res: 
-                                found.append({
-                                    'op_num': op, 
-                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                    'price': float(res[2]), 
-                                    'drawing': str(res[0])
-                                })
-
-                    if not found: 
-                        st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
-                    else:
-                        for o in found:
-                            st.session_state.storage.append({
-                                'name': selected_name, 
-                                'drawing': o['drawing'], 
-                                'op_num': o['op_num'], 
-                                'desc': o['desc'], 
-                                'price': o['price'], 
-                                'serials': serials, 
-                                'count': count, 
-                                'total': o['price'] * count
+            ok, serials, count = expand_serial_input(q_serials)
+            if not ok: 
+                st.error(serials)
+            else:
+                ops = [o.strip() for o in q_ops.split(',') if o.strip()]
+                found = []
+                with sqlite3.connect('production.db') as conn:
+                    cursor = conn.cursor()
+                    for op in ops:
+                        cursor.execute(
+                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                            (q_item, f'{op},%', f'{op} %', op)
+                        )
+                        res = cursor.fetchone()
+                        if res: 
+                            # ИСПРАВЛЕННЫЙ ИНДЕКС СТРОК: Извлекаем строго по номерам полей SQL запроса
+                            found.append({
+                                'op_num': op, 
+                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                'price': float(res[2]), 
+                                'drawing': str(res[0])
                             })
-                        
-                        # ДАННЫЕ СОХРАНЕНЫ:
-                        # Включаем триггер очистки, чтобы при перезагрузке форма сбросила поля
-                        st.session_state.clear_form_trigger = True
-                        st.success("Успешно добавлено!")
-                        st.rerun()
+
+                if not found: 
+                    st.error(f"Операции {q_ops} для '{q_item}' не найдены в базе данных.")
+                else:
+                    for o in found:
+                        st.session_state.storage.append({
+                            'name': q_item, 
+                            'drawing': o['drawing'], 
+                            'op_num': o['op_num'], 
+                            'desc': o['desc'], 
+                            'price': o['price'], 
+                            'serials': serials, 
+                            'count': count, 
+                            'total': o['price'] * count
+                        })
+                    st.success("Успешно добавлено!")
+                    st.rerun()
         except Exception as e:
             st.sidebar.error(f"Ошибка сохранения: {e}")
 
