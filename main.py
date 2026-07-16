@@ -24,7 +24,7 @@ def expand_serial_input(text):
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
         elif p.isdigit(): count += 1; res.append(str(int(p)))
-        else: return False, f"Ошибка in: '{p}'", 0
+        else: return False, f"Ошибка в: '{p}'", 0
     return True, ", ".join(res), count
 
 def generate_excel_bytes(data):
@@ -111,18 +111,12 @@ else:
         function sendData(e) {{
             e.preventDefault();
             
-            const payload = {{
-                item: inpItem.value,
-                ops: inpOps.value,
-                serials: inpSerials.value
-            }};
-            
-            submitBtn.textContent = "⏳ Добавление...";
+            submitBtn.textContent = "⏳ Расчёт и добавление...";
             submitBtn.style.backgroundColor = "#ccc";
             submitBtn.disabled = true;
 
-            // Самый безопасный веб-интерфейс связи: кодируем в URL параметры Streamlit. 
-            // Это никогда не блокируется и не вызывает зависаний!
+            // БЕЗОПАСНАЯ ПЕРЕДАЧА: пишем параметры напрямую в адресную строку основного окна.
+            // Никакой очистки полей в этот момент не делаем, исключая потерю данных!
             const url = new URL(window.parent.location.href);
             url.searchParams.set('item', inpItem.value);
             url.searchParams.set('ops', inpOps.value);
@@ -133,14 +127,14 @@ else:
     """
     
     components.html(html_form, height=330)
-    # ОБРАБОТКА ПАРАМЕТРОВ ИЗ URL
+    # ОБРАБОТКА ПАРАМЕТРОВ ИЗ URL СРЕДСТВАМИ STREAMLIT
     q_item = st.query_params.get("item", "").strip()
     q_ops = st.query_params.get("ops", "").strip()
     q_serials = st.query_params.get("serials", "").strip()
 
     if q_item and q_ops and q_serials:
         try:
-            # Сразу чистим параметры URL, чтобы добавление не шло по кругу при F5
+            # Очищаем параметры URL, чтобы добавление не шло по бесконечному кругу при обычном обновлении страницы
             st.query_params.clear()
             
             ok, serials, count = expand_serial_input(q_serials)
@@ -158,7 +152,7 @@ else:
                         )
                         res = cursor.fetchone()
                         if res: 
-                            # ИСПРАВЛЕННЫЙ ИНДЕКС СТРОК: Извлекаем строго по номерам полей SQL запроса
+                            # ИСПРАВЛЕНИЕ: Извлекаем строго по индексам результатов из кортежа SQLite
                             found.append({
                                 'op_num': op, 
                                 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
@@ -167,7 +161,7 @@ else:
                             })
 
                 if not found: 
-                    st.error(f"Операции {q_ops} для '{q_item}' не найдены в базе данных.")
+                    st.error(f"Операции {q_ops} для изделия '{q_item}' не найдены в базе данных.")
                 else:
                     for o in found:
                         st.session_state.storage.append({
@@ -181,7 +175,7 @@ else:
                             'total': o['price'] * count
                         })
                     st.success("Успешно добавлено!")
-                    st.rerun()
+                    st.rerun() # Перезагружаем страницу: сумма обновится, а форма визуально очистится
         except Exception as e:
             st.sidebar.error(f"Ошибка сохранения: {e}")
 
