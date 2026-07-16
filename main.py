@@ -21,7 +21,7 @@ def expand_serial_input(text):
         if '-' in p:
             sub = p.split('-')
             if len(sub) != 2: return False, f"Ошибка в диапазоне: '{p}'", 0
-            s, e = sub[0].strip(), sub[1].strip()
+            s, e = sub.strip(), sub.strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -56,7 +56,7 @@ header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
-# Безопасное чтение живой Google Таблицы
+# Чтение Google Таблицы
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     df = conn.read(spreadsheet=st.secrets["public_gsheets_url"], ttl="5m")
@@ -65,7 +65,6 @@ except Exception as e:
     st.error(f"Не удалось подключиться к Google Таблице: {e}")
     db_names = []
 
-# Чистая форма ввода
 with st.form(key="main_order_form", clear_on_submit=True):
     selected_name = st.text_input("Изделие")
     ops_raw = st.text_input("Операции")
@@ -103,18 +102,17 @@ if submit_button:
                 ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
                 found = []
                 
+                # Фильтруем строки по названию изделия
                 sub_df = df[df["name"].astype(str).str.lower() == selected_name.lower()]
                 
                 for op in ops:
-                    match = sub_df[
-                        sub_df["work_description"].astype(str).str.startswith(f"{op},") | 
-                        sub_df["work_description"].astype(str).str.startswith(f"{op} ") | 
-                        (sub_df["work_description"].astype(str) == op)
-                    ]
+                    # ИСПРАВЛЕНИЕ: Теперь ищем строгое текстовое или числовое совпадение в НОВОМ столбце op_num
+                    match = sub_df[sub_df["op_num"].astype(str).str.strip() == op]
                     
                     if not match.empty:
                         row = match.iloc[0]
-                        desc_clean = re.sub(r'^\d+\s*,\s*', '', str(row["work_description"])).strip()
+                        # Текстовое описание теперь берется напрямую без вырезания цифр
+                        desc_clean = str(row["work_description"]).strip()
                         found.append({
                             'op_num': op,
                             'desc': desc_clean,
@@ -139,7 +137,7 @@ if submit_button:
                     st.success("Успешно добавлено!")
                     st.rerun()
 
-# Отрисовка результатов текущей смены
+# Вывод результатов смены
 if st.session_state.storage:
     st.write("---")
     with st.expander("🔍 Подробнее", expanded=True):
