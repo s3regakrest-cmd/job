@@ -33,7 +33,6 @@
     </form>
 
     <script>
-        // Streamlit автоматически заменит __ITEMS_PLACEHOLDER__ на реальный массив при загрузке
         const items = __ITEMS_PLACEHOLDER__;
         
         const inpItem = document.getElementById('inp_item');
@@ -64,15 +63,30 @@
         function sendData(e) {
             e.preventDefault();
             
-            submitBtn.textContent = "⏳ Расчёт и добавление...";
+            submitBtn.textContent = "⏳ Сохранение...";
             submitBtn.disabled = true;
 
-            // Передаем параметры в адресную строку родительского окна Streamlit
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set('item', inpItem.value);
-            url.searchParams.set('ops', inpOps.value);
-            url.searchParams.set('serials', inpSerials.value);
-            window.parent.location.href = url.toString();
+            const payload = {
+                item: inpItem.value,
+                ops: inpOps.value,
+                serials: inpSerials.value
+            };
+
+            // БЕЗОПАСНАЯ ПЕРЕДАЧА: Пишем через безопасный postMessage.
+            // Больше никакой подмены URL-строки, React не будет падать.
+            window.parent.postMessage({
+                type: 'streamlit:setComponentValue',
+                value: JSON.stringify(payload)
+            }, '*');
+
+            // Очищаем форму ровно через 800мс, давая Python время записать данные
+            setTimeout(() => {
+                inpItem.value = '';
+                inpOps.value = '';
+                inpSerials.value = '';
+                submitBtn.textContent = "➕ Рассчитать и добавить";
+                submitBtn.disabled = false;
+            }, 800);
         }
     </script>
 </body>
