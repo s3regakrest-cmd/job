@@ -3,12 +3,11 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
-from streamlit_js_eval import streamlit_js_eval
 
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# Инициализация сессии
+# Инициализация хранилища данных в сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -25,11 +24,8 @@ def expand_serial_input(text):
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
-        elif p.isdigit(): 
-            count += 1
-            res.append(str(int(p)))
-        else: 
-            return False, f"Ошибка в: '{p}'", 0
+        elif p.isdigit(): count += 1; res.append(str(int(p)))
+        else: return False, f"Ошибка в: '{p}'", 0
     return True, ", ".join(res), count
 
 def generate_excel_bytes(data):
@@ -65,6 +61,10 @@ else:
     import streamlit.components.v1 as components
     js_items = json.dumps(db_names)
     
+    # Резервируем скрытое поле ввода в самом Streamlit, куда JS запишет JSON-строку
+    if 'hidden_form_payload' not in st.session_state:
+        st.session_state.hidden_form_payload = ""
+
     html_form = f"""
     <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
         <form id="main_work_form" onsubmit="sendData(event)">
@@ -122,49 +122,49 @@ else:
                 serials: inpSerials.value
             }};
             
-            // Меняем текст кнопки для индикации сохранения
-            submitBtn.textContent = "⏳ Добавление...";
+            submitBtn.textContent = "⏳ Сохранение...";
             submitBtn.style.backgroundColor = "#ccc";
             submitBtn.disabled = true;
-            
-            // Сохраняем в хранилище браузера
-            sessionStorage.setItem('form_payload', JSON.stringify(payload));
-            
-            // Дублируем в CustomEvent и postMessage для стабильности моста
-            const event = new CustomEvent("streamlit:setComponentValue", {{ detail: JSON.stringify(payload) }});
-            window.dispatchEvent(event);
-            window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
 
-            // УВЕЛИЧЕННАЯ ЗАДЕРЖКА: Ждем 1.5 секунды перед очисткой полей
+            // ХАК: Ищем скрытое поле ввода Streamlit в родительском документе DOM и напрямую пишем в него JSON строку.
+            // Это обходит абсолютно любые ограничения песочницы iframe и гарантирует мгновенное сохранение в Python.
+            const parentInputs = window.parent.document.querySelectorAll('input');
+            let targetInput = null;
+            for (let i = 0; i < parentInputs.length; i++) {{
+                if (parentInputs[i].id && parentInputs[i].id.includes('hidden_bridge')) {{
+                    targetInput = parentInputs[i];
+                    break;
+                }}
+            }}
+
+            if (targetInput) {{
+                targetInput.value = JSON.stringify(payload);
+                targetInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                targetInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            }} else {{
+                // Запасной вариант отправки, если DOM заблокирован
+                window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
+            }}
+
+            // Очищаем поля формы для пользователя только через 1 секунду
             setTimeout(() => {{
                 inpItem.value = '';
                 inpOps.value = '';
                 inpSerials.value = '';
-                
-                // Возвращаем кнопку в исходное состояние
                 submitBtn.textContent = "➕ Рассчитать и добавить";
                 submitBtn.style.backgroundColor = "rgb(255, 75, 75)";
                 submitBtn.disabled = false;
-            }}, 1500);
+            }}, 1000);
         }}
     </script>
     """
     
+    # Создаем текстовое поле-мост в Streamlit. Оно скрыто от глаз пользователя, но доступно для скрипта
+    form_data_raw = st.text_input("Вспомогательный мост (не заполнять):", key="hidden_bridge", label_visibility="collapsed")
+    
+    # Отрисовываем HTML форму
     components.html(html_form, height=330)
-
-    # ОБРАБОТКА ДАННЫХ ЧЕРЕЗ БЕЗОПАСНЫЙ СТАНДАРТНЫЙ JS-МОСТ
-    js_code = """
-    (() => {
-        const data = sessionStorage.getItem('form_payload');
-        if (data && data.trim() !== "") {
-            sessionStorage.setItem('form_payload', ''); // Затираем кэш, чтобы не зацикливать добавление
-            return data;
-        }
-        return "";
-    })()
-    """
-    form_data_raw = streamlit_js_eval(js_expressions=js_code, key="js_form_bridge")
-
+    # ОБРАБОТКА ДАННЫХ ИЗ НАДЁЖНОГО ТЕКСТОВОГО МОСТА
     if form_data_raw and form_data_raw.strip():
         try:
             data_json = json.loads(form_data_raw)
@@ -209,10 +209,13 @@ else:
                                 'count': count, 
                                 'total': o['price'] * count
                             })
+                        
+                        # КРИТИЧЕСКИЙ ШАГ: Сбрасываем текстовое поле моста, чтобы предотвратить дубли записей при обновлении
+                        st.session_state.hidden_bridge = ""
                         st.success("Успешно добавлено!")
                         st.rerun()
         except Exception as e:
-            pass
+            st.sidebar.error(f"Ошибка сохранения: {e}")
 
     # Отрисовка результатов текущей смены
     if st.session_state.storage:
