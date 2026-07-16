@@ -56,15 +56,18 @@ else:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
     import streamlit.components.v1 as components
-    js_items = json.dumps(db_names)
+    
+    # Формируем список подсказок для нативного браузерного выдвижного меню iPhone
+    options_html = "".join([f'<option value="{name}">' for name in db_names])
     
     html_form = f"""
     <div style="font-family: sans-serif; width: 100%; box-sizing: border-box;">
         <form id="main_work_form" onsubmit="sendData(event)">
-            <div style="position: relative; margin-bottom: 15px;">
+            <div style="margin-bottom: 15px;">
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Изделие:</label>
-                <input type="text" id="inp_item" autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
-                <div id="box_sug" style="position: absolute; top: 100%; left: 0; width: 100%; background: white; border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: none; z-index: 999999; max-height: 180px; overflow-y: auto;"></div>
+                <!-- ИСПРАВЛЕНО: добавлен list="items_list" для нативного выдвижного саджеста на iPhone -->
+                <input type="text" id="inp_item" list="items_list" autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+                <datalist id="items_list">{options_html}</datalist>
             </div>
             <div style="margin-bottom: 15px;">
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Операции:</label>
@@ -79,31 +82,9 @@ else:
     </div>
 
     <script>
-        const items = {js_items};
         const inpItem = document.getElementById('inp_item');
-        const boxSug = document.getElementById('box_sug');
         const inpOps = document.getElementById('inp_ops');
         const inpSerials = document.getElementById('inp_serials');
-
-        inpItem.addEventListener('input', (e) => {{
-            const val = e.target.value.toLowerCase().trim();
-            boxSug.innerHTML = '';
-            if (!val) {{ boxSug.style.display = 'none'; return; }}
-            const m = items.filter(i => i.toLowerCase().startsWith(val));
-            if (m.length) {{
-                m.forEach(i => {{
-                    const d = document.createElement('div'); d.textContent = i;
-                    d.style.padding = '12px 10px'; d.style.cursor = 'pointer'; d.style.borderBottom = '1px solid #eee';
-                    d.onmouseenter = () => d.style.background = '#f5f5f5';
-                    d.onmouseleave = () => d.style.background = 'white';
-                    d.onclick = () => {{ inpItem.value = i; boxSug.style.display = 'none'; }};
-                    boxSug.appendChild(d);
-                }});
-                boxSug.style.display = 'block';
-            }} else {{ boxSug.style.display = 'none'; }}
-        }});
-
-        document.addEventListener('click', (e) => {{ if (e.target !== inpItem) boxSug.style.display = 'none'; }});
 
         function sendData(e) {{
             e.preventDefault();
@@ -112,10 +93,8 @@ else:
                 ops: inpOps.value,
                 serials: inpSerials.value
             }};
-            // Сначала надежно отправляем данные в Python
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
             
-            // ИСПРАВЛЕНО: Даем микрозадержку в 100мс перед стиранием, чтобы данные успели дойти до сервера
             setTimeout(() => {{
                 inpItem.value = '';
                 inpOps.value = '';
@@ -149,6 +128,7 @@ else:
 
                     if not found: st.error(f"Операции {ops_raw} для '{selected_name}' не найдены.")
                     else:
+                        # ИСПРАВЛЕНО: Восстановлена оборванная строка добавления в хранилище смены
                         for o in found:
                             st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
                         st.success("Успешно добавлено!")
