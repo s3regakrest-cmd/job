@@ -7,6 +7,7 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
+# Инициализация сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -63,7 +64,6 @@ else:
     import streamlit.components.v1 as components
     js_items = json.dumps(db_names)
     
-    # Используем чистый HTML-мост с поддержкой отправки состояния через sessionStorage веб-браузера
     html_form = f"""
     <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
         <form id="main_work_form" onsubmit="sendData(event)">
@@ -113,18 +113,15 @@ else:
 
         function sendData(e) {{
             e.preventDefault();
-            const payload = {{
-                item: inpItem.value,
-                ops: inpOps.value,
-                serials: inpSerials.value
-            }};
             
-            // Записываем данные в куки/хеш URL iframe для считывания на стороне Python через Streamlit Query Parameters
-            const queryData = encodeURIComponent(JSON.stringify(payload));
-            window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
+            // Безопасно кодируем значения полей формы
+            const pItem = encodeURIComponent(inpItem.value);
+            const pOps = encodeURIComponent(inpOps.value);
+            const pSerials = encodeURIComponent(inpSerials.value);
             
-            // Резервный канал передачи через хэш родительского окна (решает проблему сброса кнопок в iframe)
-            window.parent.location.hash = "data=" + queryData;
+            // Напрямую перезагружаем родительское окно со стабильными query-параметрами URL. 
+            // Это решает проблему отправки данных на абсолютно любых устройствах (включая iPhone).
+            window.parent.location.search = `?item=${{pItem}}&ops=${{pOps}}&serials=${{pSerials}}`;
 
             setTimeout(() => {{
                 inpItem.value = '';
@@ -135,73 +132,65 @@ else:
     </script>
     """
     
-    # Передаем через нативный query_params, чтобы обойти баги реактивности iframe
-    form_data_raw = components.html(html_form, height=330)
-    # ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ (считывание через безопасный механизм хэша URL)
-    # Это предотвращает сбросы значений и баги десинхронизации кнопок на смартфонах/iPhone
-    query_hash = st.context.get_url_params().get("hash") or [""]
-    hash_str = query_hash[0] if isinstance(query_hash, list) else query_hash
-    
-    # Если в URL есть данные формы, обрабатываем их
-    parsed_payload = None
-    if "data=" in hash_str:
-        try:
-            raw_json = hash_str.split("data=")[1]
-            parsed_payload = json.loads(re.sub(r'%[0-9a-fA-F]{2}', lambda m: bytes.fromhex(m.group(0)[1:]).decode('utf-8'), raw_json))
-            # Сразу чистим хэш, чтобы избежать зацикливания при перезагрузке страницы
-            st.context.set_url_params()
-        except:
-            pass
+    # Отображаем форму
+    components.html(html_form, height=330)
+    # ОБРАБОТКА ДАННЫХ С ИСПОЛЬЗОВАНИЕМ СТАБИЛЬНОГО СЛОВАРЯ QUERY_PARAMS
+    # Считываем переданные из формы параметры
+    q_item = st.query_params.get("item", "").strip()
+    q_ops = st.query_params.get("ops", "").strip()
+    q_serials = st.query_params.get("serials", "").strip()
 
-    if parsed_payload:
+    if q_item and q_ops and q_serials:
         try:
-            selected_name = parsed_payload['item'].strip()
-            ops_raw = parsed_payload['ops'].strip()
-            serials_raw = parsed_payload['serials'].strip()
+            selected_name = q_item
+            ops_raw = q_ops
+            serials_raw = q_serials
             
-            if selected_name and ops_raw and serials_raw:
-                ok, serials, count = expand_serial_input(serials_raw)
-                if not ok: 
-                    st.error(serials)
-                else:
-                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                    found = []
-                    with sqlite3.connect('production.db') as conn:
-                        cursor = conn.cursor()
-                        for op in ops:
-                            cursor.execute(
-                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                                (selected_name, f'{op},%', f'{op} %', op)
-                            )
-                            res = cursor.fetchone()
-                            if res: 
-                                found.append({
-                                    'op_num': op, 
-                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                    'price': float(res[2]), 
-                                    'drawing': str(res[0])
-                                })
-
-                    if not found: 
-                        st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
-                    else:
-                        for o in found:
-                            st.session_state.storage.append({
-                                'name': selected_name, 
-                                'drawing': o['drawing'], 
-                                'op_num': o['op_num'], 
-                                'desc': o['desc'], 
-                                'price': o['price'], 
-                                'serials': serials, 
-                                'count': count, 
-                                'total': o['price'] * count
+            # Предварительно очищаем параметры URL, чтобы добавление не зацикливалось при обычном F5
+            st.query_params.clear()
+            
+            ok, serials, count = expand_serial_input(serials_raw)
+            if not ok: 
+                st.error(serials)
+            else:
+                ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                found = []
+                with sqlite3.connect('production.db') as conn:
+                    cursor = conn.cursor()
+                    for op in ops:
+                        cursor.execute(
+                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                            (selected_name, f'{op},%', f'{op} %', op)
+                        )
+                        res = cursor.fetchone()
+                        if res: 
+                            found.append({
+                                'op_num': op, 
+                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                'price': float(res[2]), 
+                                'drawing': str(res[0])
                             })
-                        st.success("Успешно добавлено!")
-                        st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"Ошибка обработки: {e}")
 
-    # Отрисовка результатов смены
+                if not found: 
+                    st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
+                else:
+                    for o in found:
+                        st.session_state.storage.append({
+                            'name': selected_name, 
+                            'drawing': o['drawing'], 
+                            'op_num': o['op_num'], 
+                            'desc': o['desc'], 
+                            'price': o['price'], 
+                            'serials': serials, 
+                            'count': count, 
+                            'total': o['price'] * count
+                        })
+                    st.success("Успешно добавлено!")
+                    st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Ошибка сохранения: {e}")
+
+    # Отрисовка результатов текущей смены
     if st.session_state.storage:
         st.write("---")
         with st.expander("🔍 Подробнее", expanded=True):
