@@ -55,9 +55,9 @@ def generate_excel_bytes(session_data):
     wb.save(f)
     return f.getvalue()
 
-# --- МЕТРИКА СУММЫ В ПРАВОМ ВЕРХНЕМ УГЛУ ---
+# --- ИСПРАВЛЕНО: Явное указание пропорций колонок для st.columns ---
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
-header_col, metric_col = st.columns()
+header_col, metric_col = st.columns([3, 1])
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
@@ -86,7 +86,6 @@ else:
     
     raw_selected_name = components.html(html_code, height=45)
     
-    # ИСПРАВЛЕНО: Принудительно приводим к строковому типу, защищая от конфликтов Streamlit API
     if raw_selected_name is None:
         selected_name = str(st.session_state.item_name_val)
     else:
@@ -111,7 +110,6 @@ else:
                     for op in ops:
                         cursor.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op))
                         res = cursor.fetchone()
-                        # ИСПРАВЛЕНО: точный разбор по индексам кортежа ответа БД
                         if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
 
                 if not found: st.error("Операции не найдены в базе.")
