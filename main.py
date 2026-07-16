@@ -81,7 +81,7 @@ else:
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Номера изделий:</label>
                 <input type="text" id="inp_serials" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
             </div>
-            <button type="submit" style="width: 100%; background-color: rgb(255, 75, 75); color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
+            <button type="submit" id="submit_btn" style="width: 100%; background-color: rgb(255, 75, 75); color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
         </form>
     </div>
 
@@ -91,6 +91,7 @@ else:
         const boxSug = document.getElementById('box_sug');
         const inpOps = document.getElementById('inp_ops');
         const inpSerials = document.getElementById('inp_serials');
+        const submitBtn = document.getElementById('submit_btn');
 
         inpItem.addEventListener('input', (e) => {{
             const val = e.target.value.toLowerCase().trim();
@@ -121,35 +122,42 @@ else:
                 serials: inpSerials.value
             }};
             
-            // Используем стандартный канал CustomEvent, который слушает библиотека streamlit-js-eval
+            // Меняем текст кнопки для индикации сохранения
+            submitBtn.textContent = "⏳ Добавление...";
+            submitBtn.style.backgroundColor = "#ccc";
+            submitBtn.disabled = true;
+            
+            // Сохраняем в хранилище браузера
+            sessionStorage.setItem('form_payload', JSON.stringify(payload));
+            
+            // Дублируем в CustomEvent и postMessage для стабильности моста
             const event = new CustomEvent("streamlit:setComponentValue", {{ detail: JSON.stringify(payload) }});
             window.dispatchEvent(event);
-            
-            // Отправляем резервный postMessage для локальной отладки
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
 
-            // Очищаем форму на экране у пользователя
-            inpItem.value = '';
-            inpOps.value = '';
-            inpSerials.value = '';
+            // УВЕЛИЧЕННАЯ ЗАДЕРЖКА: Ждем 1.5 секунды перед очисткой полей
+            setTimeout(() => {{
+                inpItem.value = '';
+                inpOps.value = '';
+                inpSerials.value = '';
+                
+                // Возвращаем кнопку в исходное состояние
+                submitBtn.textContent = "➕ Рассчитать и добавить";
+                submitBtn.style.backgroundColor = "rgb(255, 75, 75)";
+                submitBtn.disabled = false;
+            }}, 1500);
         }}
     </script>
     """
     
-    # Отрисовываем HTML форму на экране
     components.html(html_form, height=330)
+
     # ОБРАБОТКА ДАННЫХ ЧЕРЕЗ БЕЗОПАСНЫЙ СТАНДАРТНЫЙ JS-МОСТ
-    # Считываем значения глобальных переменных из sessionStorage, установленных скриптом
     js_code = """
     (() => {
-        window.addEventListener('message', (e) => {
-            if (e.data && e.data.type === 'streamlit:setComponentValue') {
-                sessionStorage.setItem('form_payload', e.data.value);
-            }
-        });
         const data = sessionStorage.getItem('form_payload');
-        if (data) {
-            sessionStorage.removeItem('form_payload'); // Сразу чистим кэш
+        if (data && data.trim() !== "") {
+            sessionStorage.setItem('form_payload', ''); // Затираем кэш, чтобы не зацикливать добавление
             return data;
         }
         return "";
