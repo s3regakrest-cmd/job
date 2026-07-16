@@ -7,6 +7,13 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
+# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ДЛЯ ОЧИСТКИ ПОЛЕЙ ---
+if 'storage' not in st.session_state: 
+    st.session_state.storage = []
+if 'ops_val' not in st.session_state: 
+    st.session_state.ops_val = ""
+if 'serials_val' not in st.session_state: 
+    st.session_state.serials_val = ""
 
 def expand_serial_input(text):
     text = text.strip()
@@ -17,7 +24,7 @@ def expand_serial_input(text):
     for p in parts:
         if '-' in p:
             sub = p.split('-')
-            s, e = sub[0].strip(), sub[1].strip()  # ИСПРАВЛЕНО: берем элементы списка по индексам
+            s, e = sub[0].strip(), sub[1].strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -27,7 +34,6 @@ def expand_serial_input(text):
         else:
             return False, f"Ошибка в: '{p}'", 0
     return True, ", ".join(res), count
-
 
 def generate_excel_bytes(session_data):
     wb = Workbook()
@@ -55,9 +61,16 @@ def generate_excel_bytes(session_data):
     wb.save(f)
     return f.getvalue()
 
+# --- СЧЕТЧИК ОБЩЕЙ СУММЫ НА УРОВНЕ ЗАГОЛОВКА ---
+grand_total_now = sum(i['total'] for i in st.session_state.storage)
 
-if 'storage' not in st.session_state: st.session_state.storage = []
-st.title("⚙️ Расчёт заказов")
+# Разделяем верхнюю строчку на две колонки: для заголовка и для суммы справа
+header_col, metric_col = st.columns([2, 1])
+with header_col:
+    st.title("⚙️ Расчёт заказов")
+with metric_col:
+    # Выводим текущую сумму в правый верхний угол
+    st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
 if not os.path.exists('production.db'):
     st.error("Файл 'production.db' не найден!")
@@ -67,9 +80,12 @@ else:
         cursor.execute("SELECT DISTINCT name FROM items")
         db_names = [r[0] for r in cursor.fetchall()]
 
+    # Изделие с возможностью ввода текста и поиска по первым буквам
     name = st.selectbox("Изделие:", db_names)
-    ops_raw = st.text_input("Операции (через запятую):", placeholder="25, 45")
-    serials_raw = st.text_input("Номера изделий:", placeholder="140-42, 147")
+    
+    # Операции и Номера (примеры из placeholder удалены)
+    ops_raw = st.text_input("Операции (через запятую):", value=st.session_state.ops_val)
+    serials_raw = st.text_input("Номера изделий:", value=st.session_state.serials_val)
 
     if st.button("➕ Рассчитать и добавить", use_container_width=True):
         if not ops_raw or not serials_raw:
@@ -88,8 +104,13 @@ else:
                             "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)",
                             (name, f'{op},%', op))
                         res = cursor.fetchone()
-                        if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(),
-                                              'price': float(res[2]), 'drawing': res[0]})
+                        if res: 
+                            found.append({
+                                'op_num': op, 
+                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(),
+                                'price': float(res[2]), 
+                                'drawing': res[0]
+                            })
 
                 if not found:
                     st.error("Операции не найдены.")
@@ -98,15 +119,19 @@ else:
                         st.session_state.storage.append(
                             {'name': name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'],
                              'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
+                    
+                    # АВТОМАТИЧЕСКОЕ СТИРАНИЕ ПОЛЕЙ ПОСЛЕ ДОБАВЛЕНИЯ
+                    st.session_state.ops_val = ""
+                    st.session_state.serials_val = ""
                     st.success("Успешно добавлено!")
+                    st.rerun()
 
+    # --- КНОПКА ПОДРОБНЕЕ (ДАННЫЕ СПРЯТАНЫ ПОД НЕЁ) ---
     if st.session_state.storage:
         st.write("---")
-        for item in st.session_state.storage:
-            st.write(
-                f"**{item['name']}** | Оп. {item['op_num']} ({item['desc']}) | {item['count']} шт. (№ {item['serials']}) — *{item['total']:.2f} руб.*")
-
-        st.metric(label="Общая сумма за смену", value=f"{sum(i['total'] for i in st.session_state.storage):.2f} руб.")
+        with st.expander("🔍 Подробнее"):
+            for item in st.session_state.storage:
+                st.write(f"**{item['name']}** | Оп. {item['op_num']} ({item['desc']}) | {item['count']} шт. (№ {item['serials']}) — *{item['total']:.2f} руб.*")
 
         st.download_button(
             label="💾 Скачать отчет Excel на iPhone",
@@ -117,16 +142,17 @@ else:
         )
         if st.button("🗑️ Сбросить смену", use_container_width=True):
             st.session_state.storage = []
+            st.session_state.ops_val = ""
+            st.session_state.serials_val = ""
             st.rerun()
 
-    # --- СЕКРЕТНЫЙ БЛОК ДОБАВЛЕНИЯ В БАЗУ ПРЯМО С ТЕЛЕФОНА ---
+    # --- РЕДАКТОР БАЗЫ ДАННЫХ ---
     st.write("---")
     with st.expander("🔐 Редактор базы данных (Добавить новую деталь)"):
         pwd = st.text_input("Пароль администратора:", type="password", key="adm_p")
-        if pwd == "1234":  # Сюда можно вписать любой ваш пароль
+        if pwd == "1234":
             add_name = st.text_input("Наименование нового изделия (например: бэшка):").strip()
             add_draw = st.text_input("Номер чертежа:").strip()
-            # Напоминалка: номер операции должен быть в начале строки
             add_desc = st.text_input("Описание (формат: '10, описание_работ'):").strip()
             add_price = st.number_input("Стоимость за единицу (руб):", min_value=0.0, step=0.5, key="adm_pr")
 
