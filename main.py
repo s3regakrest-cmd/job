@@ -63,20 +63,25 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    # Создаем форму Streamlit. Параметр clear_on_submit=True очистит поля ТОЛЬКО после успешной отправки данных в Python
+    # Создаем форму Streamlit. Поле "Изделие" теперь текстовое — в нем можно писать руками!
     with st.form(key="main_order_form", clear_on_submit=True):
         st.write("**Добавление новой записи**")
         
-        # Выпадающий список с автопоиском при вводе текста (заменяет ваш JS-автокомплит)
-        selected_name = st.selectbox("Изделие:", options=[""] + db_names, index=0, help="Введите название для поиска")
+        # Заменили selectbox на обычный text_input, чтобы можно было свободно писать
+        selected_name = st.text_input("Изделие (введите точное название):", placeholder="Начните вводить название изделия...")
+        
+        # Дополнительно выводим список подсказок прямо под полем, чтобы пользователь мог скопировать или подсмотреть точное имя
+        with st.expander("📋 Посмотреть список доступных изделий для проверки"):
+            st.caption(", ".join(db_names))
+            
         ops_raw = st.text_input("Операции (через запятую):", placeholder="Например: 10, 20")
         serials_raw = st.text_input("Номера изделий:", placeholder="Например: 101-105, 107 или today")
         
         submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
     # ОБРАБОТКА НАЖАТИЯ КНОПКИ ФОРМЫ
     if submit_button:
-        if not selected_name:
-            st.error("Пожалуйста, выберите изделие из списка!")
+        if not selected_name.strip():
+            st.error("Пожалуйста, введите наименование изделия!")
         elif not ops_raw.strip():
             st.error("Пожалуйста, укажите номера операций!")
         elif not serials_raw.strip():
@@ -86,140 +91,56 @@ else:
             ops_raw = ops_raw.strip()
             serials_raw = serials_raw.strip()
             
-            ok, serials, count = expand_serial_input(serials_raw)
-            if not ok: 
-                st.error(serials)
-            else:
-                ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                found = []
-                with sqlite3.connect('production.db') as conn:
-                    cursor = conn.cursor()
-                    for op in ops:
-                        # Поиск операции в текстовом поле описания
-                        cursor.execute(
-                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                            (selected_name, f'{op},%', f'{op} %', op)
-                        )
-                        res = cursor.fetchone()
-                        if res: 
-                            found.append({
-                                'op_num': op, 
-                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                'price': float(res[2]), 
-                                'drawing': str(res[0])
-                            })
-
-                if not found: 
-                    st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
-                else:
-                    for o in found:
-                        st.session_state.storage.append({
-                            'name': selected_name, 
-                            'drawing': o['drawing'], 
-                            'op_num': o['op_num'], 
-                            'desc': o['desc'], 
-                            'price': o['price'], 
-                            'serials': serials, 
-                            'count': count, 
-                            'total': o['price'] * count
-                        })
-                    st.success("Успешно добавлено!")
-                    st.rerun()
-
-    # Отрисовка результатов текущей смены
-    if st.session_state.storage:
-        st.write("---")
-        with st.expander("🔍 Подробнее", expanded=True):
-            for i in st.session_state.storage: 
-                st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
-        
-        # Кнопка скачивания отчета Excel
-        excel_file = generate_excel_bytes(st.session_state.storage)
-        st.download_button(
-            "💾 Скачать отчет Excel на iPhone", 
-            excel_file, 
-            f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", 
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            use_container_width=True
-        )
-        
-        if st.button("🗑️ Сбросить смену", use_container_width=True):
-            st.session_state.storage = []
-            st.rerun()
-
-    # Админ-панель для работы с БД
-    st.write("---")
-    with st.expander("🔐 Редактор базы данных"):
-        if st.text_input("Пароль администратора:", type="password", key="adm_p") == "1234":
-            add_name = st.text_input("Наименование:").strip()
-            add_draw = st.text_input("Чертеж:").strip()
-            add_desc = st.text_input("Описание (начните с номера операции, например: '10, Токарная'):").strip()
-            add_price = st.number_input("Цена:", min_value=0.0, step=0.5)
+            # Проверяем, существует ли написанное пользователем изделие в базе данных (регистронезависимо)
+            name_exists = any(selected_name.lower() == name.lower() for name in db_names)
             
-            if st.button("💾 Сохранить в базу данных", use_container_width=True):
-                if not add_name or not add_draw or not add_desc or add_price <= 0: 
-                    st.error("Заполните корректно все поля!")
-                else:
-                    with sqlite3.connect('production.db') as conn: 
-                        conn.execute(
-                            "INSERT INTO items (name, drawing_number, work_description, price_per_unit) VALUES (?, ?, ?, ?)", 
-                            (add_name, add_draw, add_desc, add_price)
-                        )
-                        conn.commit()
-                    st.success("Успешно добавлено в базу данных!")
-                    st.rerun()
-    # ОБРАБОТКА НАЖАТИЯ КНОПКИ ФОРМЫ
-    if submit_button:
-        if not selected_name:
-            st.error("Пожалуйста, выберите изделие из списка!")
-        elif not ops_raw.strip():
-            st.error("Пожалуйста, укажите номера операций!")
-        elif not serials_raw.strip():
-            st.error("Пожалуйста, укажите номера изделий!")
-        else:
-            selected_name = selected_name.strip()
-            ops_raw = ops_raw.strip()
-            serials_raw = serials_raw.strip()
-            
-            ok, serials, count = expand_serial_input(serials_raw)
-            if not ok: 
-                st.error(serials)
+            if not name_exists:
+                st.error(f"Изделие '{selected_name}' не найдено в базе данных! Проверьте правильность написания.")
             else:
-                ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                found = []
-                with sqlite3.connect('production.db') as conn:
-                    cursor = conn.cursor()
-                    for op in ops:
-                        # Поиск операции в текстовом поле описания
-                        cursor.execute(
-                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                            (selected_name, f'{op},%', f'{op} %', op)
-                        )
-                        res = cursor.fetchone()
-                        if res: 
-                            found.append({
-                                'op_num': op, 
-                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                'price': float(res[2]), 
-                                'drawing': str(res[0])
-                            })
-
-                if not found: 
-                    st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
+                # Находим точное имя из базы, чтобы не было проблем с регистром букв
+                for name in db_names:
+                    if selected_name.lower() == name.lower():
+                        selected_name = name
+                        break
+                
+                ok, serials, count = expand_serial_input(serials_raw)
+                if not ok: 
+                    st.error(serials)
                 else:
-                    for o in found:
-                        st.session_state.storage.append({
-                            'name': selected_name, 
-                            'drawing': o['drawing'], 
-                            'op_num': o['op_num'], 
-                            'desc': o['desc'], 
-                            'price': o['price'], 
-                            'serials': serials, 
-                            'count': count, 
-                            'total': o['price'] * count
-                        })
-                    st.success("Успешно добавлено!")
-                    st.rerun()
+                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                    found = []
+                    with sqlite3.connect('production.db') as conn:
+                        cursor = conn.cursor()
+                        for op in ops:
+                            cursor.execute(
+                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                                (selected_name, f'{op},%', f'{op} %', op)
+                            )
+                            res = cursor.fetchone()
+                            if res: 
+                                found.append({
+                                    'op_num': op, 
+                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                    'price': float(res[2]), 
+                                    'drawing': str(res[0])
+                                })
+
+                    if not found: 
+                        st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в базе данных.")
+                    else:
+                        for o in found:
+                            st.session_state.storage.append({
+                                'name': selected_name, 
+                                'drawing': o['drawing'], 
+                                'op_num': o['op_num'], 
+                                'desc': o['desc'], 
+                                'price': o['price'], 
+                                'serials': serials, 
+                                'count': count, 
+                                'total': o['price'] * count
+                            })
+                        st.success("Успешно добавлено!")
+                        st.rerun()
 
     # Отрисовка результатов текущей смены
     if st.session_state.storage:
