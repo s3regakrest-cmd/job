@@ -19,7 +19,7 @@ def expand_serial_input(text):
     for p in parts:
         if '-' in p:
             sub = p.split('-')
-            s, e = sub[0].strip(), sub[1].strip()
+            s, e = sub.strip(), sub.strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -59,66 +59,71 @@ else:
 
     import streamlit.components.v1 as components
     
-    # ЧИТАЕМ HTML ИЗ ВНЕШНЕГО ФАЙЛА
+    # Регистрация безопасного inline компонента без лишних параметров
+    def secure_html_component(html_code, height=330, key=None):
+        return components.declare_component("secure_form", inline=True)(html_code=html_code, height=height, key=key)
+
+    js_items = json.dumps(db_names)
+    
     html_path = os.path.join(os.path.dirname(__file__), 'autocomplete.html') if '__file__' in locals() else 'autocomplete.html'
     if os.path.exists(html_path):
         with open(html_path, 'r', encoding='utf-8') as f:
             html_template = f.read()
         
-        # Подставляем список деталей прямо в JavaScript внешнего файла
-        html_form = html_template.replace('__ITEMS_PLACEHOLDER__', json.dumps(db_names))
-        components.html(html_form, height=330)
+        html_form = html_template.replace('__ITEMS_PLACEHOLDER__', js_items)
+        
+        # Передаем форму в наш компонент. Он вернет JSON строку сразу после отправки формы!
+        form_data_raw = secure_html_component(html_form, height=340, key="my_iframe_form")
     else:
         st.error("Файл 'autocomplete.html' не найден рядом со скриптом!")
-    # ОБРАБОТКА ДАННЫХ ИЗ URL СРЕДСТВАМИ STREAMLIT
-    q_item = st.query_params.get("item", "").strip()
-    q_ops = st.query_params.get("ops", "").strip()
-    q_serials = st.query_params.get("serials", "").strip()
-
-    if q_item and q_ops and q_serials:
+        form_data_raw = None
+    # ОБРАБОТКА ДАННЫХ ИЗ БЕЗОПАСНОГО КАНАЛА КОМПОНЕНТА
+    if form_data_raw and form_data_raw.strip():
         try:
-            # Сразу стираем параметры из строки браузера, чтобы избежать дублирования при F5
-            st.query_params.clear()
+            data_json = json.loads(form_data_raw)
+            selected_name = data_json['item'].strip()
+            ops_raw = data_json['ops'].strip()
+            serials_raw = data_json['serials'].strip()
             
-            ok, serials, count = expand_serial_input(q_serials)
-            if not ok: 
-                st.error(serials)
-            else:
-                ops = [o.strip() for o in q_ops.split(',') if o.strip()]
-                found = []
-                with sqlite3.connect('production.db') as conn:
-                    cursor = conn.cursor()
-                    for op in ops:
-                        cursor.execute(
-                            "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
-                            (q_item, f'{op},%', f'{op} %', op)
-                        )
-                        res = cursor.fetchone()
-                        if res: 
-                            # ИСПРАВЛЕНО: Читаем строго по индексам колонок SQL-выборки
-                            found.append({
-                                'op_num': op, 
-                                'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
-                                'price': float(res[2]), 
-                                'drawing': str(res[0])
-                            })
-
-                if not found: 
-                    st.error(f"Операции {q_ops} для изделия '{q_item}' не найдены в базе данных.")
+            if selected_name and ops_raw and serials_raw:
+                ok, serials, count = expand_serial_input(serials_raw)
+                if not ok: 
+                    st.error(serials)
                 else:
-                    for o in found:
-                        st.session_state.storage.append({
-                            'name': q_item, 
-                            'drawing': o['drawing'], 
-                            'op_num': o['op_num'], 
-                            'desc': o['desc'], 
-                            'price': o['price'], 
-                            'serials': serials, 
-                            'count': count, 
-                            'total': o['price'] * count
-                        })
-                    st.success("Успешно добавлено!")
-                    st.rerun() # Перезагрузка очистит форму во внешнем файле и обновит верхний счетчик
+                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                    found = []
+                    with sqlite3.connect('production.db') as conn:
+                        cursor = conn.cursor()
+                        for op in ops:
+                            cursor.execute(
+                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                                (selected_name, f'{op},%', f'{op} %', op)
+                            )
+                            res = cursor.fetchone()
+                            if res: 
+                                found.append({
+                                    'op_num': op, 
+                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                    'price': float(res[2]), 
+                                    'drawing': str(res[0])
+                                })
+
+                    if not found: 
+                        st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в базе данных.")
+                    else:
+                        for o in found:
+                            st.session_state.storage.append({
+                                'name': selected_name, 
+                                'drawing': o['drawing'], 
+                                'op_num': o['op_num'], 
+                                'desc': o['desc'], 
+                                'price': o['price'], 
+                                'serials': serials, 
+                                'count': count, 
+                                'total': o['price'] * count
+                            })
+                        st.success("Успешно добавлено!")
+                        st.rerun() # Мгновенный перезапуск обновит сумму и очистит форму
         except Exception as e:
             st.sidebar.error(f"Ошибка сохранения: {e}")
 
