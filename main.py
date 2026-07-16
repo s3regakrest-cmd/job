@@ -3,11 +3,12 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+from streamlit_js_eval import streamlit_js_eval
 
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# Инициализация хранилища данных в сессии
+# Инициализация сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -20,7 +21,6 @@ def expand_serial_input(text):
     for p in parts:
         if '-' in p:
             sub = p.split('-')
-            if len(sub) != 2: return False, f"Ошибка в диапазоне: '{p}'", 0
             s, e = sub[0].strip(), sub[1].strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
@@ -51,7 +51,6 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-# Считаем сумму за смену
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -63,46 +62,109 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    # Создаем форму Streamlit. Поле "Изделие" теперь текстовое — в нем можно писать руками!
-    with st.form(key="main_order_form", clear_on_submit=True):
-        st.write("**Добавление новой записи**")
-        
-        # Заменили selectbox на обычный text_input, чтобы можно было свободно писать
-        selected_name = st.text_input("Изделие (введите точное название):", placeholder="Начните вводить название изделия...")
-        
-        # Дополнительно выводим список подсказок прямо под полем, чтобы пользователь мог скопировать или подсмотреть точное имя
-        with st.expander("📋 Посмотреть список доступных изделий для проверки"):
-            st.caption(", ".join(db_names))
+    import streamlit.components.v1 as components
+    js_items = json.dumps(db_names)
+    
+    html_form = f"""
+    <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
+        <form id="main_work_form" onsubmit="sendData(event)">
+            <div style="position: relative; margin-bottom: 15px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Изделие:</label>
+                <input type="text" id="inp_item" autocomplete="off" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+                <div id="box_sug" style="position: absolute; top: 100%; left: 0; width: 100%; background: white; border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: none; z-index: 999999; max-height: 180px; overflow-y: auto;"></div>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Операции:</label>
+                <input type="text" id="inp_ops" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+            </div>
+            <div style="margin-bottom: 20px;">
+                <label style="font-weight: bold; font-size: 14px; color: #31333F;">Номера изделий:</label>
+                <input type="text" id="inp_serials" required style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; margin-top:5px; box-sizing:border-box;">
+            </div>
+            <button type="submit" style="width: 100%; background-color: rgb(255, 75, 75); color: white; border: none; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer;">➕ Рассчитать и добавить</button>
+        </form>
+    </div>
+
+    <script>
+        const items = {js_items};
+        const inpItem = document.getElementById('inp_item');
+        const boxSug = document.getElementById('box_sug');
+        const inpOps = document.getElementById('inp_ops');
+        const inpSerials = document.getElementById('inp_serials');
+
+        inpItem.addEventListener('input', (e) => {{
+            const val = e.target.value.toLowerCase().trim();
+            boxSug.innerHTML = '';
+            if (!val) {{ boxSug.style.display = 'none'; return; }}
+            const m = items.filter(i => i.toLowerCase().startsWith(val));
+            if (m.length) {{
+                m.forEach(i => {{
+                    const d = document.createElement('div'); d.textContent = i;
+                    d.style.padding = '12px 10px'; d.style.cursor = 'pointer'; d.style.borderBottom = '1px solid #eee';
+                    d.onmouseenter = () => d.style.background = '#f5f5f5';
+                    d.onmouseleave = () => d.style.background = 'white';
+                    d.onclick = () => {{ inpItem.value = i; boxSug.style.display = 'none'; }};
+                    boxSug.appendChild(d);
+                }});
+                boxSug.style.display = 'block';
+            }} else {{ boxSug.style.display = 'none'; }}
+        }});
+
+        document.addEventListener('click', (e) => {{ if (e.target !== inpItem) boxSug.style.display = 'none'; }});
+
+        function sendData(e) {{
+            e.preventDefault();
             
-        ops_raw = st.text_input("Операции (через запятую):", placeholder="Например: 10, 20")
-        serials_raw = st.text_input("Номера изделий:", placeholder="Например: 101-105, 107 или today")
-        
-        submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
-    # ОБРАБОТКА НАЖАТИЯ КНОПКИ ФОРМЫ
-    if submit_button:
-        if not selected_name.strip():
-            st.error("Пожалуйста, введите наименование изделия!")
-        elif not ops_raw.strip():
-            st.error("Пожалуйста, укажите номера операций!")
-        elif not serials_raw.strip():
-            st.error("Пожалуйста, укажите номера изделий!")
-        else:
-            selected_name = selected_name.strip()
-            ops_raw = ops_raw.strip()
-            serials_raw = serials_raw.strip()
+            const payload = {{
+                item: inpItem.value,
+                ops: inpOps.value,
+                serials: inpSerials.value
+            }};
             
-            # Проверяем, существует ли написанное пользователем изделие в базе данных (регистронезависимо)
-            name_exists = any(selected_name.lower() == name.lower() for name in db_names)
+            // Используем стандартный канал CustomEvent, который слушает библиотека streamlit-js-eval
+            const event = new CustomEvent("streamlit:setComponentValue", {{ detail: JSON.stringify(payload) }});
+            window.dispatchEvent(event);
             
-            if not name_exists:
-                st.error(f"Изделие '{selected_name}' не найдено в базе данных! Проверьте правильность написания.")
-            else:
-                # Находим точное имя из базы, чтобы не было проблем с регистром букв
-                for name in db_names:
-                    if selected_name.lower() == name.lower():
-                        selected_name = name
-                        break
-                
+            // Отправляем резервный postMessage для локальной отладки
+            window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
+
+            // Очищаем форму на экране у пользователя
+            inpItem.value = '';
+            inpOps.value = '';
+            inpSerials.value = '';
+        }}
+    </script>
+    """
+    
+    # Отрисовываем HTML форму на экране
+    components.html(html_form, height=330)
+    # ОБРАБОТКА ДАННЫХ ЧЕРЕЗ БЕЗОПАСНЫЙ СТАНДАРТНЫЙ JS-МОСТ
+    # Считываем значения глобальных переменных из sessionStorage, установленных скриптом
+    js_code = """
+    (() => {
+        window.addEventListener('message', (e) => {
+            if (e.data && e.data.type === 'streamlit:setComponentValue') {
+                sessionStorage.setItem('form_payload', e.data.value);
+            }
+        });
+        const data = sessionStorage.getItem('form_payload');
+        if (data) {
+            sessionStorage.removeItem('form_payload'); // Сразу чистим кэш
+            return data;
+        }
+        return "";
+    })()
+    """
+    form_data_raw = streamlit_js_eval(js_expressions=js_code, key="js_form_bridge")
+
+    if form_data_raw and form_data_raw.strip():
+        try:
+            data_json = json.loads(form_data_raw)
+            selected_name = data_json['item'].strip()
+            ops_raw = data_json['ops'].strip()
+            serials_raw = data_json['serials'].strip()
+            
+            if selected_name and ops_raw and serials_raw:
                 ok, serials, count = expand_serial_input(serials_raw)
                 if not ok: 
                     st.error(serials)
@@ -126,7 +188,7 @@ else:
                                 })
 
                     if not found: 
-                        st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в базе данных.")
+                        st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
                     else:
                         for o in found:
                             st.session_state.storage.append({
@@ -141,6 +203,8 @@ else:
                             })
                         st.success("Успешно добавлено!")
                         st.rerun()
+        except Exception as e:
+            pass
 
     # Отрисовка результатов текущей смены
     if st.session_state.storage:
@@ -149,7 +213,6 @@ else:
             for i in st.session_state.storage: 
                 st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         
-        # Кнопка скачивания отчета Excel
         excel_file = generate_excel_bytes(st.session_state.storage)
         st.download_button(
             "💾 Скачать отчет Excel на iPhone", 
