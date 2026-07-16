@@ -59,25 +59,40 @@ else:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
     st.write("**Изделие:**")
+    
+    # ИСПРАВЛЕНО: добавлено явное перекрытие z-index и фон, чтобы вытолкнуть список на ПЕРВЫЙ план
     sel_name = comp.html(f"""
-    <div style="position:relative; width:100%; font-family:sans-serif;">
+    <div style="position:relative; width:100%; font-family:sans-serif; z-index:999999 !important;">
         <input type="text" id="inp" value="{st.session_state.item_name_val}" placeholder="Начните писать..." autocomplete="off" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; box-sizing:border-box;">
-        <div id="box" style="position:absolute; top:100%; left:0; width:100%; background:white; border:1px solid #ccc; border-top:none; border-radius:0 0 4px 4px; box-shadow:0 4px 6px rgba(0,0,0,0.1); display:none; z-index:999999!important; max-height:150px; overflow-y:auto;"></div>
+        <div id="box" style="position:absolute; top:100%; left:0; width:100%; background-color:#ffffff !important; border:1px solid #ccc; border-radius:0 0 4px 4px; box-shadow:0 8px 16px rgba(0,0,0,0.2); display:none; z-index:9999999 !important; max-height:150px; overflow-y:auto;"></div>
     </div>
     <script>
         const items = {json.dumps(db_names)};
         const inp = document.getElementById('inp');
         const box = document.getElementById('box');
+        
+        // Принудительно заставляем контейнеры Streamlit стать прозрачными для всплывающих окон
         if (window.parent && window.parent.document) {{
-            window.parent.document.querySelectorAll('iframe').forEach(f => {{ if (f.contentWindow === window) f.style.overflow = f.parentElement.style.overflow = 'visible'; }});
+            window.parent.document.querySelectorAll('iframe').forEach(f => {{ 
+                if (f.contentWindow === window) {{
+                    f.style.overflow = 'visible';
+                    f.parentElement.style.overflow = 'visible';
+                    f.style.zIndex = '999999';
+                }}
+            }});
         }}
+        
         inp.addEventListener('input', (e) => {{
             const val = e.target.value.toLowerCase(); box.innerHTML = '';
             if (!val) {{ box.style.display = 'none'; send(val); return; }}
             const m = items.filter(i => i.toLowerCase().includes(val));
             if (m.length) {{
                 m.forEach(i => {{
-                    const d = document.createElement('div'); d.textContent = i; d.style.padding = '10px'; d.style.cursor = 'pointer';
+                    const d = document.createElement('div'); d.textContent = i; 
+                    d.style.padding = '12px 10px'; d.style.cursor = 'pointer'; d.style.background = '#ffffff';
+                    d.style.borderBottom = '1px solid #eee'; d.style.color = '#000000';
+                    d.onmouseenter = () => d.style.background = '#f5f5f5';
+                    d.onmouseleave = () => d.style.background = '#ffffff';
                     d.onclick = () => {{ inp.value = i; box.style.display = 'none'; send(i); }};
                     box.appendChild(d);
                 }});
@@ -93,6 +108,8 @@ else:
     selected_name = str(sel_name if sel_name is not None else st.session_state.item_name_val)
     st.session_state.item_name_val = selected_name
 
+    # Добавляем небольшой пустой интервал, чтобы выпадающий список визуально не перекрывал подпись следующего поля
+    st.write("") 
     ops_raw = st.text_input("Операции:", value=st.session_state.ops_val)
     serials_raw = st.text_input("Номера изделий:", value=st.session_state.serials_val)
 
@@ -106,7 +123,6 @@ else:
                 found = []
                 with sqlite3.connect('production.db') as conn:
                     for op in ops:
-                        # ИСПРАВЛЕНО: добавлена закрывающая скобка перед .fetchone()
                         res = conn.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op)).fetchone()
                         if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
                 
