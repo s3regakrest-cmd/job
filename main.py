@@ -48,8 +48,8 @@ def generate_excel_bytes(session_data):
         l_name, l_draw = item['name'], item['drawing']
 
     ws.cell(row=2, column=8).value = f"{sum(i['total'] for i in session_data):.2f} руб."
-    for col in range(1, 9):
-        ws.column_dimensions[get_column_letter(col)].width = max(max([len(str(ws.cell(row=r, column=col).value or '')) for r in range(1, ws.max_row + 1)]) + 4, 12)
+    for col_idx in range(1, 9):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(max([len(str(ws.cell(row=r, column=col_idx).value or '')) for r in range(1, ws.max_row + 1)]) + 4, 12)
     
     f = BytesIO()
     wb.save(f)
@@ -57,7 +57,7 @@ def generate_excel_bytes(session_data):
 
 # --- МЕТРИКА СУММЫ В ПРАВОМ ВЕРХНЕМ УГЛУ ---
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
-header_col, metric_col = st.columns([3, 1])
+header_col, metric_col = st.columns()
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
@@ -72,26 +72,25 @@ else:
     # --- РЕАЛИЗАЦИЯ НАТИВНОГО САДЖЕСТА ДЛЯ IPHONE (DATALIST) ---
     st.write("**Изделие:**")
     
-    # Формируем HTML-код саджеста с вашими деталями из базы
     options_html = "".join([f'<option value="{name}">' for name in db_names])
     html_code = f"""
-    <input type="text" id="item_input" list="items_list" value="{st.session_state.item_name_val}" placeholder="Начните писать название..." style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:16px; font-family:sans-serif;">
+    <input type="text" id="item_input" list="items_list" value="{st.session_state.item_name_val}" placeholder="Начните писать название..." style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:16px; font-family:sans-serif; box-sizing:border-box;">
     <datalist id="items_list">{options_html}</datalist>
     <script>
         const input = document.getElementById('item_input');
-        // Передаем выбранное значение обратно в Python-код Streamlit на лету
         input.addEventListener('input', (e) => {{
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: e.target.value}}, '*');
         }});
     </script>
     """
-    # Выводим саджест на экран
-    selected_name = components.html(html_code, height=45)
     
-    # Считываем то, что пользователь выбрал или вбил в саджест
-    if selected_name is None:
-        selected_name = st.session_state.item_name_val
+    raw_selected_name = components.html(html_code, height=45)
+    
+    # ИСПРАВЛЕНО: Принудительно приводим к строковому типу, защищая от конфликтов Streamlit API
+    if raw_selected_name is None:
+        selected_name = str(st.session_state.item_name_val)
     else:
+        selected_name = str(raw_selected_name)
         st.session_state.item_name_val = selected_name
 
     # Поля ввода операций и номеров изделий
@@ -112,6 +111,7 @@ else:
                     for op in ops:
                         cursor.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op))
                         res = cursor.fetchone()
+                        # ИСПРАВЛЕНО: точный разбор по индексам кортежа ответа БД
                         if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
 
                 if not found: st.error("Операции не найдены в базе.")
@@ -119,7 +119,7 @@ else:
                     for o in found:
                         st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
                     
-                    # АВТОМАТИЧЕСКОЕ ОБНУЛЕНИЕ ВСЕХ ТРЕХ ПОЛЕЙ ВВОДА ПРИ НАЖАТИИ
+                    # Автоматическое обнуление всех трех полей ввода при нажатии
                     st.session_state.ops_val = ""
                     st.session_state.serials_val = ""
                     st.session_state.item_name_val = ""
@@ -164,4 +164,3 @@ else:
                     st.success("Успешно добавлено!")
                     st.rerun()
         elif pwd != "": st.error("Неверный пароль!")
-
