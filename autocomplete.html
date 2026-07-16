@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <style>
         body { font-family: sans-serif; margin: 0; padding: 5px; box-sizing: border-box; background-color: transparent; }
-        .form-group { margin-bottom: 15px; position: relative; }
+        .form-group { margin-bottom: 12px; position: relative; }
         label { font-weight: bold; font-size: 14px; color: #31333F; display: block; margin-bottom: 5px; }
         input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; box-sizing: border-box; }
         #box_sug { position: absolute; top: 100%; left: 0; width: 100%; background: white; border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: none; z-index: 999999; max-height: 180px; overflow-y: auto; }
@@ -41,6 +41,11 @@
         const inpSerials = document.getElementById('inp_serials');
         const submitBtn = document.getElementById('submit_btn');
 
+        // Восстанавливаем черновик, если расчет завершился ошибкой в БД
+        inpItem.value = sessionStorage.getItem('dr_item') || '';
+        inpOps.value = sessionStorage.getItem('dr_ops') || '';
+        inpSerials.value = sessionStorage.getItem('dr_serials') || '';
+
         inpItem.addEventListener('input', (e) => {
             const val = e.target.value.toLowerCase().trim();
             boxSug.innerHTML = '';
@@ -72,21 +77,25 @@
                 serials: inpSerials.value
             };
 
-            // БЕЗОПАСНАЯ ПЕРЕДАЧА: Пишем через безопасный postMessage.
-            // Больше никакой подмены URL-строки, React не будет падать.
-            window.parent.postMessage({
-                type: 'streamlit:setComponentValue',
-                value: JSON.stringify(payload)
-            }, '*');
+            // Сохраняем черновик в память сессии браузера
+            sessionStorage.setItem('dr_item', inpItem.value);
+            sessionStorage.setItem('dr_ops', inpOps.value);
+            sessionStorage.setItem('dr_serials', inpSerials.value);
 
-            // Очищаем форму ровно через 800мс, давая Python время записать данные
-            setTimeout(() => {
-                inpItem.value = '';
-                inpOps.value = '';
-                inpSerials.value = '';
-                submitBtn.textContent = "➕ Рассчитать и добавить";
-                submitBtn.disabled = false;
-            }, 800);
+            // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Меняем хэш САМОГО iframe. 
+            // Это разрешено политикой безопасности, мгновенно передает данные в Python и не вызывает ошибку React removeChild
+            window.location.hash = "submit_" + encodeURIComponent(JSON.stringify(payload));
+        }
+
+        // Если Python очистил сессию (успешное добавление), стираем инпуты на экране
+        if (window.location.href.includes('clear=true')) {
+            sessionStorage.removeItem('dr_item');
+            sessionStorage.removeItem('dr_ops');
+            sessionStorage.removeItem('dr_serials');
+            inpItem.value = '';
+            inpOps.value = '';
+            inpSerials.value = '';
+            window.location.hash = '';
         }
     </script>
 </body>
