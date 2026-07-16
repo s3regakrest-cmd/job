@@ -118,3 +118,30 @@ else:
         if st.button("🗑️ Сбросить смену", use_container_width=True):
             st.session_state.storage = []
             st.rerun()
+
+    # --- СЕКРЕТНЫЙ БЛОК ДОБАВЛЕНИЯ В БАЗУ ПРЯМО С ТЕЛЕФОНА ---
+    st.write("---")
+    with st.expander("🔐 Редактор базы данных (Добавить новую деталь)"):
+        pwd = st.text_input("Пароль администратора:", type="password", key="adm_p")
+        if pwd == "1234":  # Сюда можно вписать любой ваш пароль
+            add_name = st.text_input("Наименование нового изделия (например: бэшка):").strip()
+            add_draw = st.text_input("Номер чертежа:").strip()
+            # Напоминалка: номер операции должен быть в начале строки
+            add_desc = st.text_input("Описание (формат: '10, описание_работ'):").strip()
+            add_price = st.number_input("Стоимость за единицу (руб):", min_value=0.0, step=0.5, key="adm_pr")
+
+            if st.button("💾 Сохранить в базу данных", use_container_width=True):
+                if not add_name or not add_draw or not add_desc or add_price <= 0:
+                    st.error("Заполните все поля корректно!")
+                else:
+                    with sqlite3.connect('production.db') as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO items (name, drawing_number, work_description, price_per_unit) 
+                            VALUES (?, ?, ?, ?)
+                        """, (add_name, add_draw, add_desc, add_price))
+                        conn.commit()
+                    st.success(f"Запись для '{add_name}' успешно сохранена в базу!")
+                    st.rerun()
+        elif pwd != "":
+            st.error("Неверный пароль!")
