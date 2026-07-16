@@ -1,15 +1,14 @@
-import os, re, datetime, sqlite3, json, streamlit as st
+import os, re, datetime, sqlite3, streamlit as st
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-# --- НАСТРОЙКИ И КОНФИГУРАЦИЯ ---
+# --- НАСТРОЙКИ ---
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 DB_PATH = 'production.db'
 
-# Инициализация сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -17,7 +16,6 @@ if 'storage' not in st.session_state:
 
 @st.cache_data(ttl=300)
 def get_items_from_db():
-    """Загружает список изделий из БД с кэшированием."""
     if not os.path.exists(DB_PATH):
         return []
     try:
@@ -28,17 +26,14 @@ def get_items_from_db():
 
 @st.cache_data
 def generate_excel_bytes(data):
-    """Генерирует Excel файл. Кэшируется по содержимому data."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Отчет за день"
     
-    # Заголовки
     headers = ["наименование", "номер чертежа", "номер операции", "стоимость за единицу", 
                "номера изделий", "количество", "общая стоимость (операция)", "общая сумма за смену"]
     ws.append(headers)
     
-    # Жирный шрифт для заголовков
     for c in range(1, 9): 
         ws.cell(row=1, column=c).font = Font(bold=True)
     
@@ -46,7 +41,6 @@ def generate_excel_bytes(data):
     
     for i in data:
         f_op = f"{i['op_num']} {i['desc']}"
-        # Группировка: если изделие и чертеж совпадают с предыдущей строкой, не дублируем название
         same = i['name'].lower() == l_name.lower() and i['drawing'] == l_draw
         
         row_data = [
@@ -62,12 +56,10 @@ def generate_excel_bytes(data):
         ws.append(row_data)
         l_name, l_draw = i['name'], i['drawing']
     
-    # Итоговая сумма в первой строке данных (колонка 8)
     if data:
         total_sum = sum(i['total'] for i in data)
         ws.cell(row=2, column=8).value = f"{total_sum:.2f} руб."
 
-    # Автоподбор ширины колонок
     for c in range(1, 9):
         max_len = 0
         for r in range(1, ws.max_row + 1):
@@ -80,7 +72,6 @@ def generate_excel_bytes(data):
     return f.getvalue()
 
 def expand_serial_input(text):
-    """Парсит ввод серийных номеров (диапазоны, списки, today)."""
     text = text.strip()
     if text.lower() == 'today': 
         return True, DAYS[datetime.datetime.now().weekday()], 1
@@ -94,7 +85,6 @@ def expand_serial_input(text):
         if '-' in p:
             sub = p.split('-')
             s, e = sub[0].strip(), sub[1].strip()
-            # Защита от некорректного ввода, если конец короче начала
             if len(e) < len(s): 
                 e = s[:len(s) - len(e)] + e
             
@@ -116,31 +106,23 @@ def expand_serial_input(text):
     return True, ", ".join(res), count
 
 def init_db_indexes():
-    """Создает индексы в БД для ускорения поиска, если их нет."""
     if not os.path.exists(DB_PATH):
         return
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        # Индексы для быстрого поиска по имени (без учета регистра) и описанию
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_name_lower ON items(LOWER(name))")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_desc ON items(work_description)")
         conn.commit()
 
 # --- ОСНОВНАЯ ЛОГИКА ---
 
-# 1. Проверка БД и создание индексов
 if not os.path.exists(DB_PATH):
-    st.error(f"Файл базы данных '{DB_PATH}' не найден! Создайте его и таблицу 'items'.")
+    st.error(f"Файл базы данных '{DB_PATH}' не найден!")
 else:
     init_db_indexes()
 
-# Загрузка данных для автодополнения
 db_names = get_items_from_db()
 
-if not db_names:
-    st.warning("База данных пуста или не содержит изделий. Добавьте данные через админ-панель.")
-
-# 2. Блок добавления заказа (Нативная форма Streamlit)
 with st.form("order_form", clear_on_submit=True):
     col1, col2 = st.columns([3, 1])
     
@@ -150,14 +132,14 @@ with st.form("order_form", clear_on_submit=True):
         serials_input = st.text_input("Номера изделий", placeholder="101-110 или 101,102,103 или 'today'")
     
     with col2:
-        st.write("") # Пустое место для выравнивания
+        st.write("")
         submitted = st.form_submit_button("➕ Рассчитать и добавить", type="primary", use_container_width=True)
 
 if submitted:
+    # Важно: не делаем st.rerun() здесь. Streamlit сам перерисует страницу после обработки формы.
     if not item or not ops_input or not serials_input:
         st.warning("Пожалуйста, заполните все поля формы.")
     else:
-        # Валидация серийных номеров
         ok, serials_str, count = expand_serial_input(serials_input)
         if not ok:
             st.error(serials_str)
@@ -165,11 +147,9 @@ if submitted:
             ops_list = [o.strip() for o in ops_input.split(',') if o.strip()]
             found_ops = []
             
-            # Поиск в БД
             with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 for op in ops_list:
-                    # Оптимизированный запрос: ищем по началу строки описания
                     cursor.execute(
                         "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND work_description LIKE ?", 
                         (item, f"{op}%")
@@ -177,7 +157,6 @@ if submitted:
                     res = cursor.fetchone()
                     
                     if res:
-                        # Очистка описания от номера операции в начале
                         desc_raw = str(res[1])
                         clean_desc = re.sub(r'^\d+\s*,\s*', '', desc_raw).strip()
                         
@@ -191,7 +170,6 @@ if submitted:
             if not found_ops:
                 st.error(f"Операции '{ops_input}' для изделия '{item}' не найдены в базе.")
             else:
-                # Добавление в сессию
                 for o in found_ops:
                     st.session_state.storage.append({
                         'name': item, 
@@ -203,11 +181,9 @@ if submitted:
                         'count': count, 
                         'total': o['price'] * count
                     })
+                # Просто показываем сообщение. Страница обновится сама.
                 st.success("Заказ успешно добавлен!")
-                # st.rerun() не нужен, так как clear_on_submit=True очистит форму,
-                # а состояние уже обновлено. Страница перерисуется автоматически.
 
-# 3. Отображение статистики и результатов
 st.write("---")
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
@@ -215,7 +191,6 @@ with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
 if st.session_state.storage:
-    # Ограничение вывода для производительности
     MAX_SHOW = 100
     to_show = st.session_state.storage[-MAX_SHOW:]
     
@@ -224,9 +199,8 @@ if st.session_state.storage:
             st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         
         if len(st.session_state.storage) > MAX_SHOW:
-            st.caption(f"Показано последние {MAX_SHOW} из {len(st.session_state.storage)} записей. Старые записи сохранены в памяти.")
+            st.caption(f"Показано последние {MAX_SHOW} из {len(st.session_state.storage)} записей.")
 
-    # Кнопка скачивания Excel (использует кэшированную функцию)
     excel_file = generate_excel_bytes(st.session_state.storage)
     st.download_button(
         "💾 Скачать отчет Excel", 
@@ -236,11 +210,11 @@ if st.session_state.storage:
         use_container_width=True
     )
     
+    # Сброс смены: только тут нужен rerun, потому что мы очищаем session_state
     if st.button("🗑️ Сбросить смену", use_container_width=True, type="secondary"):
         st.session_state.storage = []
         st.rerun()
 
-# 4. Админ-панель
 st.write("---")
 with st.expander("🔐 Редактор базы данных"):
     pwd = st.text_input("Пароль администратора", type="password", key="adm_p")
@@ -263,24 +237,14 @@ with st.expander("🔐 Редактор базы данных"):
                         )
                         conn.commit()
                     st.success("Успешно добавлено в базу данных!")
-                    st.rerun() # Перезапуск нужен, чтобы обновился список автодополнения
+                    # Здесь rerun нужен, чтобы обновился список автодополнения
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при записи в БД: {e}")
     elif pwd:
         st.error("Неверный пароль администратора")
 
-# Напоследок: напоминание про структуру БД, если она отсутствует
 if not os.path.exists(DB_PATH):
     st.info("""
-    Для работы приложения требуется файл `production.db` с таблицей `items`:
-    ```sql
-    CREATE TABLE IF NOT EXISTS items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        drawing_number TEXT,
-        work_description TEXT,
-        price_per_unit REAL
-    );
-    ```
-    Вы можете создать её любым SQL-клиентом или скриптом на Python.
+    Для работы приложения требуется файл `production.db` с таблицей `items`.
     """)
