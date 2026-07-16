@@ -7,7 +7,9 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-if 'storage' not in st.session_state: st.session_state.storage = []
+# Инициализация хранилища данных в сессии
+if 'storage' not in st.session_state: 
+    st.session_state.storage = []
 
 def expand_serial_input(text):
     text = text.strip()
@@ -22,12 +24,16 @@ def expand_serial_input(text):
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
-        elif p.isdigit(): count += 1; res.append(str(int(p)))
-        else: return False, f"Ошибка в: '{p}'", 0
+        elif p.isdigit(): 
+            count += 1
+            res.append(str(int(p)))
+        else: 
+            return False, f"Ошибка в: '{p}'", 0
     return True, ", ".join(res), count
 
 def generate_excel_bytes(data):
-    wb, ws = Workbook(), Workbook().active
+    wb = Workbook()
+    ws = wb.active
     ws.title = "Отчет за день"
     ws.append(["наименование", "номер чертежа", "номер операции", "стоимость за единицу", "номера изделий", "количество", "общая стоимость (операция)", "общая сумма за смену"])
     for c in range(1, 9): ws.cell(row=1, column=c).font = Font(bold=True)
@@ -44,6 +50,7 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
+# Считаем сумму за смену
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -56,10 +63,15 @@ else:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
     import streamlit.components.v1 as components
+    
+    # Регистрация кастомного inline-компонента для получения данных из JS
+    def custom_html_form(html_code, height=310, key=None):
+        return components.declare_component("html_form", inline=True)(html_code=html_code, height=height, key=key)
+
     js_items = json.dumps(db_names)
     
     html_form = f"""
-    <div style="font-family: sans-serif; width: 100%; box-sizing: border-box;">
+    <div style="font-family: sans-serif; width: 100%; box-sizing: border-box; padding: 5px;">
         <form id="main_work_form" onsubmit="sendData(event)">
             <div style="position: relative; margin-bottom: 15px;">
                 <label style="font-weight: bold; font-size: 14px; color: #31333F;">Изделие:</label>
@@ -84,6 +96,14 @@ else:
         const boxSug = document.getElementById('box_sug');
         const inpOps = document.getElementById('inp_ops');
         const inpSerials = document.getElementById('inp_serials');
+
+        function onStreamlitRender(event) {{
+            if (!window.stFormInitialized) {{
+                window.stFormInitialized = true;
+                window.parent.postMessage({{type: 'streamlit:componentReady', apiVersion: 1}}, '*');
+            }}
+        }}
+        window.addEventListener("message", onStreamlitRender);
 
         inpItem.addEventListener('input', (e) => {{
             const val = e.target.value.toLowerCase().trim();
@@ -112,6 +132,7 @@ else:
                 ops: inpOps.value,
                 serials: inpSerials.value
             }};
+            
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
             
             setTimeout(() => {{
@@ -123,52 +144,102 @@ else:
     </script>
     """
     
-    form_data_raw = components.html(html_form, height=310)
-
+    # Отрисовка формы через кастомный компонент
+    form_data_raw = custom_html_form(html_form, height=320, key="main_order_form_key")
+    # ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ
     if form_data_raw:
         try:
-            data_json = json.loads(form_data_raw)
+            # Безопасное чтение: данные могут прийти как строкой, так и словарем
+            if isinstance(form_data_raw, str):
+                data_json = json.loads(form_data_raw)
+            else:
+                data_json = form_data_raw
+                
             selected_name = data_json['item'].strip()
             ops_raw = data_json['ops'].strip()
             serials_raw = data_json['serials'].strip()
             
             if selected_name and ops_raw and serials_raw:
                 ok, serials, count = expand_serial_input(serials_raw)
-                if not ok: st.error(serials)
+                if not ok: 
+                    st.error(serials)
                 else:
                     ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
                     found = []
                     with sqlite3.connect('production.db') as conn:
                         cursor = conn.cursor()
                         for op in ops:
-                            cursor.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op))
+                            cursor.execute(
+                                "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
+                                (selected_name, f'{op},%', f'{op} %', op)
+                            )
                             res = cursor.fetchone()
-                            if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': str(res[0])})
+                            if res: 
+                                found.append({
+                                    'op_num': op, 
+                                    'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
+                                    'price': float(res[2]), 
+                                    'drawing': str(res[0])
+                                })
 
-                    if not found: st.error(f"Операции {ops_raw} для '{selected_name}' не найдены.")
+                    if not found: 
+                        st.error(f"Операции {ops_raw} для '{selected_name}' не найдены в базе данных.")
                     else:
                         for o in found:
-                            st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
+                            st.session_state.storage.append({
+                                'name': selected_name, 
+                                'drawing': o['drawing'], 
+                                'op_num': o['op_num'], 
+                                'desc': o['desc'], 
+                                'price': o['price'], 
+                                'serials': serials, 
+                                'count': count, 
+                                'total': o['price'] * count
+                            })
                         st.success("Успешно добавлено!")
                         st.rerun()
-        except:
-            pass
+        except Exception as e:
+            st.sidebar.error(f"Ошибка парсинга: {e}")
 
+    # Отрисовка результатов смены
     if st.session_state.storage:
         st.write("---")
-        with st.expander("🔍 Подробнее"):
-            for i in st.session_state.storage: st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
-        st.download_button("💾 Скачать отчет Excel на iPhone", generate_excel_bytes(st.session_state.storage), f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        with st.expander("🔍 Подробнее", expanded=True):
+            for i in st.session_state.storage: 
+                st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
+        
+        # Генерация и скачивание Excel отчета
+        excel_file = generate_excel_bytes(st.session_state.storage)
+        st.download_button(
+            "💾 Скачать отчет Excel на iPhone", 
+            excel_file, 
+            f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", 
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            use_container_width=True
+        )
+        
         if st.button("🗑️ Сбросить смену", use_container_width=True):
             st.session_state.storage = []
             st.rerun()
 
+    # Админ-панель для работы с БД
     st.write("---")
     with st.expander("🔐 Редактор базы данных"):
         if st.text_input("Пароль администратора:", type="password", key="adm_p") == "1234":
-            add_name, add_draw, add_desc, add_price = st.text_input("Наименование:").strip(), st.text_input("Чертеж:").strip(), st.text_input("Описание:").strip(), st.number_input("Цена:", min_value=0.0, step=0.5)
+            add_name = st.text_input("Наименование:").strip()
+            add_draw = st.text_input("Чертеж:").strip()
+            add_desc = st.text_input("Описание (начните с номера операции, например: '10, Токарная'):").strip()
+            add_price = st.number_input("Цена:", min_value=0.0, step=0.5)
+            
             if st.button("💾 Сохранить в базу данных", use_container_width=True):
-                if not add_name or not add_draw or not add_desc or add_price <= 0: st.error("Заполните поля!")
+                if not add_name or not add_draw or not add_desc or add_price <= 0: 
+                    st.error("Заполните корректно все поля!")
                 else:
-                    with sqlite3.connect('production.db') as conn: conn.execute("INSERT INTO items (name, drawing_number, work_description, price_per_unit) VALUES (?, ?, ?, ?)", (add_name, add_draw, add_desc, add_price)); conn.commit()
-                    st.success("Добавлено!"); st.rerun()
+                    with sqlite3.connect('production.db') as conn: 
+                        conn.execute(
+                            "INSERT INTO items (name, drawing_number, work_description, price_per_unit) VALUES (?, ?, ?, ?)", 
+                            (add_name, add_draw, add_desc, add_price)
+                        )
+                        conn.commit()
+                    st.success("Успешно добавлено в базу данных!")
+                    st.rerun()
