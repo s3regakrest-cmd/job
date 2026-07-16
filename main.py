@@ -7,11 +7,12 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ДЛЯ СТИРАНИЯ ---
+# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ДЛЯ СБРОСА ПОЛЕЙ ---
 if 'storage' not in st.session_state: st.session_state.storage = []
 if 'ops_val' not in st.session_state: st.session_state.ops_val = ""
 if 'serials_val' not in st.session_state: st.session_state.serials_val = ""
-if 'item_name_val' not in st.session_state: st.session_state.item_name_val = ""
+# Ключ для автоматической очистки выпадающего списка
+if 'clear_key' not in st.session_state: st.session_state.clear_key = 0
 
 def expand_serial_input(text):
     text = text.strip()
@@ -50,9 +51,11 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-h_col, m_col = st.columns(2)
-h_col.title("⚙️ Расчёт заказов")
-m_col.metric("Сумма за смену", f"{sum(i['total'] for i in st.session_state.storage):,.2f} руб.")
+# --- МЕТРИКА СУММЫ В ПРАВОМ ВЕРХНЕМ УГЛУ ---
+grand_total_now = sum(i['total'] for i in st.session_state.storage)
+header_col, metric_col = st.columns(2)
+with header_col: st.title("⚙️ Расчёт заказов")
+with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
 if not os.path.exists('production.db'):
     st.error("Файл 'production.db' не найден!")
@@ -60,29 +63,26 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    # --- ИНЛАЙН-САДЖЕСТ НА ПЕРВОМ ПЛАНЕ ---
-    user_typed = st.text_input("Изделие:", value=st.session_state.item_name_val, placeholder="Начните писать название...").strip()
-    
-    selected_name = user_typed
-    
-    # Логика мгновенного вывода подсказок под полем ввода на основном слое
-    if user_typed:
-        matches = [name for name in db_names if user_typed.lower() in name.lower()]
-        if matches and (len(matches) > 1 or matches[0].lower() != user_typed.lower()):
-            st.write("🔍 *Подходящие варианты (нажмите для выбора):*")
-            # Выводим подсказки в виде горизонтальных кнопок-тегов
-            cols = st.columns(min(len(matches), 4))
-            for idx, match in enumerate(matches[:4]):
-                with cols[idx % 4]:
-                    if st.button(f"📍 {match}", key=f"sug_{match}", use_container_width=True):
-                        st.session_state.item_name_val = match
-                        st.rerun()
+    # Формируем список выбора с пустой строкой в начале, чтобы поле изначально было чистым
+    select_options = [""] + db_names
 
+    # --- ИДЕАЛЬНЫЙ НАДЁЖНЫЙ САДЖЕСТ НА ПЕРВОМ ПЛАНЕ ---
+    # Позволяет писать текст, ищет мгновенно по буквам и выпадает ПОВЕРХ всех кнопок
+    selected_name = st.selectbox(
+        "Изделие:", 
+        options=select_options, 
+        index=0, 
+        key=f"item_select_{st.session_state.clear_key}",
+        placeholder="Начните писать название..."
+    )
+
+    # Поля ввода операций и номеров изделий
     ops_raw = st.text_input("Операции:", value=st.session_state.ops_val)
     serials_raw = st.text_input("Номера изделий:", value=st.session_state.serials_val)
 
     if st.button("➕ Рассчитать и добавить", use_container_width=True):
-        if not selected_name or not ops_raw or not serials_raw: st.warning("Заполните все поля!")
+        if not selected_name or not ops_raw or not serials_raw: 
+            st.warning("Заполните все поля ввода!")
         else:
             ok, serials, count = expand_serial_input(serials_raw)
             if not ok: st.error(serials)
@@ -96,17 +96,25 @@ else:
                 
                 if not found: st.error("Операции не найдены.")
                 else:
-                    for o in found: st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
-                    st.session_state.ops_val = st.session_state.serials_val = st.session_state.item_name_val = ""
-                    st.success("Успешно добавлено!"); st.rerun()
+                    for o in found: 
+                        st.session_state.storage.append({'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'], 'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
+                    
+                    # ПОЛНОЕ АВТОМАТИЧЕСКОЕ ОБНУЛЕНИЕ ВСЕХ ТРЕХ ПОЛЕЙ
+                    st.session_state.ops_val = ""
+                    st.session_state.serials_val = ""
+                    st.session_state.clear_key += 1  # Сбрасываем выпадающий список в начальное пустое значение ""
+                    st.success("Успешно добавлено!")
+                    st.rerun()
 
+    # --- КНОПКА ПОДРОБНЕЕ ДЛЯ СКРЫТИЯ ДАННЫХ ---
     if st.session_state.storage:
         st.write("---")
         with st.expander("🔍 Подробнее"):
             for i in st.session_state.storage: st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         st.download_button("💾 Скачать отчет Excel на iPhone", generate_excel_bytes(st.session_state.storage), f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if st.button("🗑️ Сбросить смену", use_container_width=True):
-            st.session_state.storage, st.session_state.ops_val, st.session_state.serials_val, st.session_state.item_name_val = [], "", "", ""
+            st.session_state.storage, st.session_state.ops_val, st.session_state.serials_val = [], "", ""
+            st.session_state.clear_key += 1
             st.rerun()
 
     st.write("---")
