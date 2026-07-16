@@ -7,7 +7,6 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# Инициализация хранилища данных в сессии
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 
@@ -51,7 +50,6 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-# Считаем сумму за смену
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
 header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
@@ -63,22 +61,12 @@ else:
     with sqlite3.connect('production.db') as conn:
         db_names = [r[0] for r in conn.execute("SELECT DISTINCT name FROM items").fetchall()]
 
-    # Создаем форму Streamlit. clear_on_submit=True очистит все поля ТОЛЬКО после успешного расчета
+    # Форма без каких-либо подсказок и плейсхолдеров
     with st.form(key="main_order_form", clear_on_submit=True):
-        st.write("**Добавление новой записи**")
-        
-        # Текстовое поле, в котором можно свободно и быстро писать руками любое название
-        selected_name = st.text_input("Изделие (введите название):", placeholder="Введите наименование детали...")
-        
-        # Дополнительная шпаргалка под полем ввода, чтобы всегда можно было подсмотреть точное название
-        with st.expander("📋 Показать список всех изделий из базы для проверки"):
-            st.caption(", ".join(db_names))
-            
-        ops_raw = st.text_input("Операции (через запятую):", placeholder="Например: 10, 20")
-        serials_raw = st.text_input("Номера изделий:", placeholder="Например: 101-105, 107 или today")
-        
+        selected_name = st.text_input("Изделие")
+        ops_raw = st.text_input("Операции")
+        serials_raw = st.text_input("Номера изделий")
         submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
-    # ОБРАБОТКА НАЖАТИЯ КНОПКИ ФОРМЫ
     if submit_button:
         if not selected_name.strip():
             st.error("Пожалуйста, введите наименование изделия!")
@@ -91,13 +79,11 @@ else:
             ops_raw = ops_raw.strip()
             serials_raw = serials_raw.strip()
             
-            # Проверяем, существует ли написанное пользователем изделие в базе (регистронезависимо)
             name_exists = any(selected_name.lower() == name.lower() for name in db_names)
             
             if not name_exists:
-                st.error(f"Изделие '{selected_name}' не найдено в базе данных! Проверьте правильность написания.")
+                st.error(f"Изделие '{selected_name}' не найдено в базе данных!")
             else:
-                # Находим точное имя из базы, чтобы избежать конфликтов с регистром букв в SQL
                 for name in db_names:
                     if selected_name.lower() == name.lower():
                         selected_name = name
@@ -112,14 +98,12 @@ else:
                     with sqlite3.connect('production.db') as conn:
                         cursor = conn.cursor()
                         for op in ops:
-                            # Оптимальный поиск: находит операцию, даже если в базе запись вида '10, Токарная' или '10 Токарная'
                             cursor.execute(
                                 "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description LIKE ? OR work_description=?)", 
                                 (selected_name, f'{op},%', f'{op} %', op)
                             )
                             res = cursor.fetchone()
                             if res: 
-                                # ТОЧНЫЕ ИНДЕКСЫ КОРТЕЖА ИЗ БАЗЫ: 0 = чертеж, 1 = описание, 2 = цена
                                 found.append({
                                     'op_num': op, 
                                     'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 
@@ -142,16 +126,14 @@ else:
                                 'total': o['price'] * count
                             })
                         st.success("Успешно добавлено!")
-                        st.rerun() # Мгновенно обновляем страницу: сумма пересчитается, а форма сама очистится
+                        st.rerun()
 
-    # Отрисовка результатов текущей смены
     if st.session_state.storage:
         st.write("---")
         with st.expander("🔍 Подробнее", expanded=True):
             for i in st.session_state.storage: 
                 st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
         
-        # Кнопка скачивания отчета Excel
         excel_file = generate_excel_bytes(st.session_state.storage)
         st.download_button(
             "💾 Скачать отчет Excel на iPhone", 
@@ -165,7 +147,6 @@ else:
             st.session_state.storage = []
             st.rerun()
 
-    # Админ-панель для работы с БД
     st.write("---")
     with st.expander("🔐 Редактор базы данных"):
         if st.text_input("Пароль администратора:", type="password", key="adm_p") == "1234":
