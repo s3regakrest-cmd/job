@@ -56,114 +56,109 @@ header_col, metric_col = st.columns(2)
 with header_col: st.title("⚙️ Расчёт заказов")
 with metric_col: st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
-# ПОДКЛЮЧЕНИЕ К GOOGLE ТАБЛИЦЕ ЧЕРЕЗ СЕКРЕТНУЮ ССЫЛКУ SECRETS
+# Подключение к Google Таблице
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    # Читаем данные из облака (кэшируем на 10 минут, чтобы приложение работало мгновенно)
     df = conn.read(spreadsheet=st.secrets["public_gsheets_url"], ttl="10m")
-    # Достаем список уникальных изделий для проверки ввода
     db_names = df["name"].dropna().unique().tolist()
 except Exception as e:
     st.error(f"Не удалось подключиться к Google Таблице: {e}")
     db_names = []
 
+# Форма Streamlit (Блок полностью изолирован)
 with st.form(key="main_order_form", clear_on_submit=True):
     selected_name = st.text_input("Изделие")
     ops_raw = st.text_input("Операции")
     serials_raw = st.text_input("Номера изделий")
     submit_button = st.form_submit_button(label="➕ Рассчитать и добавить", use_container_width=True)
-    if submit_button:
-        if not db_names:
-            st.error("База данных пуста или недоступна.")
-        elif not selected_name.strip():
-            st.error("Пожалуйста, введите наименование изделия!")
-        elif not ops_raw.strip():
-            st.error("Пожалуйста, укажите номера операций!")
-        elif not serials_raw.strip():
-            st.error("Пожалуйста, укажите номера изделий!")
+# ОБРАБОТКА НАЖАТИЯ КНОПКИ (Обратите внимание: этот блок идет без отступов, вне st.form)
+if submit_button:
+    if not db_names:
+        st.error("База данных пуста или недоступна.")
+    elif not selected_name.strip():
+        st.error("Пожалуйста, введите наименование изделия!")
+    elif not ops_raw.strip():
+        st.error("Пожалуйста, укажите номера операций!")
+    elif not serials_raw.strip():
+        st.error("Пожалуйста, укажите номера изделий!")
+    else:
+        selected_name = selected_name.strip()
+        ops_raw = ops_raw.strip()
+        serials_raw = serials_raw.strip()
+        
+        name_exists = any(selected_name.lower() == str(name).lower() for name in db_names)
+        
+        if not name_exists:
+            st.error(f"Изделие '{selected_name}' не найдено в вашей Google Таблице!")
         else:
-            selected_name = selected_name.strip()
-            ops_raw = ops_raw.strip()
-            serials_raw = serials_raw.strip()
+            for name in db_names:
+                if selected_name.lower() == str(name).lower():
+                    selected_name = str(name)
+                    break
             
-            # Проверяем наличие изделия в памяти DataFrame (без учета регистра)
-            name_exists = any(selected_name.lower() == str(name).lower() for name in db_names)
-            
-            if not name_exists:
-                st.error(f"Изделие '{selected_name}' не найдено в вашей Google Таблице!")
+            ok, serials, count = expand_serial_input(serials_raw)
+            if not ok: 
+                st.error(serials)
             else:
-                # Выравниваем регистр под эталон из таблицы
-                for name in db_names:
-                    if selected_name.lower() == str(name).lower():
-                        selected_name = str(name)
-                        break
+                ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
+                found = []
                 
-                ok, serials, count = expand_serial_input(serials_raw)
-                if not ok: 
-                    st.error(serials)
+                sub_df = df[df["name"].astype(str).str.lower() == selected_name.lower()]
+                
+                for op in ops:
+                    match = sub_df[
+                        sub_df["work_description"].astype(str).str.startswith(f"{op},") | 
+                        sub_df["work_description"].astype(str).str.startswith(f"{op} ") | 
+                        (sub_df["work_description"].astype(str) == op)
+                    ]
+                    
+                    if not match.empty:
+                        row = match.iloc[0]
+                        desc_clean = re.sub(r'^\d+\s*,\s*', '', str(row["work_description"])).strip()
+                        found.append({
+                            'op_num': op,
+                            'desc': desc_clean,
+                            'price': float(row["price_per_unit"]),
+                            'drawing': str(row["drawing_number"])
+                        })
+
+                if not found: 
+                    st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в Google Таблице.")
                 else:
-                    ops = [o.strip() for o in ops_raw.split(',') if o.strip()]
-                    found = []
-                    
-                    # Фильтруем строки Google Таблицы по выбранному изделию
-                    sub_df = df[df["name"].astype(str).str.lower() == selected_name.lower()]
-                    
-                    for op in ops:
-                        # Ищем совпадение по номеру операции в колонке work_description
-                        # Соответствует логике LIKE '%op,%' или '%op %'
-                        match = sub_df[
-                            sub_df["work_description"].astype(str).str.startswith(f"{op},") | 
-                            sub_df["work_description"].astype(str).str.startswith(f"{op} ") | 
-                            (sub_df["work_description"].astype(str) == op)
-                        ]
-                        
-                        if not match.empty:
-                            row = match.iloc[0]
-                            desc_clean = re.sub(r'^\d+\s*,\s*', '', str(row["work_description"])).strip()
-                            found.append({
-                                'op_num': op,
-                                'desc': desc_clean,
-                                'price': float(row["price_per_unit"]),
-                                'drawing': str(row["drawing_number"])
-                            })
+                    for o in found:
+                        st.session_state.storage.append({
+                            'name': selected_name, 
+                            'drawing': o['drawing'], 
+                            'op_num': o['op_num'], 
+                            'desc': o['desc'], 
+                            'price': o['price'], 
+                            'serials': serials, 
+                            'count': count, 
+                            'total': o['price'] * count
+                        })
+                    st.success("Успешно добавлено!")
+                    st.rerun()
 
-                    if not found: 
-                        st.error(f"Операции {ops_raw} для изделия '{selected_name}' не найдены в Google Таблице.")
-                    else:
-                        for o in found:
-                            st.session_state.storage.append({
-                                'name': selected_name, 
-                                'drawing': o['drawing'], 
-                                'op_num': o['op_num'], 
-                                'desc': o['desc'], 
-                                'price': o['price'], 
-                                'serials': serials, 
-                                'count': count, 
-                                'total': o['price'] * count
-                            })
-                        st.success("Успешно добавлено!")
-                        st.rerun()
-
-    if st.session_state.storage:
-        st.write("---")
-        with st.expander("🔍 Подробнее", expanded=True):
-            for i in st.session_state.storage: 
-                st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
-        
-        excel_file = generate_excel_bytes(st.session_state.storage)
-        st.download_button(
-            "💾 Скачать отчет Excel на iPhone", 
-            excel_file, 
-            f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", 
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            use_container_width=True
-        )
-        
-        if st.button("🗑️ Сбросить смену", use_container_width=True):
-            st.session_state.storage = []
-            st.rerun()
-
-    # Секция админки усечена, так как редактировать базу теперь можно напрямую из приложения Google Таблиц на телефоне!
+# Отрисовка результатов текущей смены (Теперь кнопка скачивания работает легально)
+if st.session_state.storage:
     st.write("---")
-    with st.expander("🔐 Информация о базе данных"):
-        st.info("Данные успешно синхронизированы с вашей онлайн Google Таблицей. Чтобы добавить новые изделия или изменить расценки, просто отредактируйте исходный файл в вашем Google Диске.")
+    with st.expander("🔍 Подробнее", expanded=True):
+        for i in st.session_state.storage: 
+            st.write(f"**{i['name']}** | Оп. {i['op_num']} ({i['desc']}) | {i['count']} шт. (№ {i['serials']}) — *{i['total']:.2f} руб.*")
+    
+    excel_file = generate_excel_bytes(st.session_state.storage)
+    st.download_button(
+        "💾 Скачать отчет Excel на iPhone", 
+        excel_file, 
+        f"{datetime.datetime.now().strftime('%d.%m.%Y')}.xlsx", 
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+        use_container_width=True
+    )
+    
+    if st.button("🗑️ Сбросить смену", use_container_width=True):
+        st.session_state.storage = []
+        st.rerun()
+
+st.write("---")
+with st.expander("🔐 Информация о базе данных"):
+    st.info("Данные успешно синхронизированы с вашей онлайн Google Таблицей. Чтобы добавить новые изделия или изменить расценки, просто отредактируйте исходный файл в вашем Google Диске.")
