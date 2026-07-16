@@ -112,10 +112,15 @@ else:
                 ops: inpOps.value,
                 serials: inpSerials.value
             }};
+            // Сначала надежно отправляем данные в Python
             window.parent.postMessage({{type: 'streamlit:setComponentValue', value: JSON.stringify(payload)}}, '*');
-            inpItem.value = '';
-            inpOps.value = '';
-            inpSerials.value = '';
+            
+            // ИСПРАВЛЕНО: Даем микрозадержку в 100мс перед стиранием, чтобы данные успели дойти до сервера
+            setTimeout(() => {{
+                inpItem.value = '';
+                inpOps.value = '';
+                inpSerials.value = '';
+            }}, 100);
         }}
     </script>
     """
