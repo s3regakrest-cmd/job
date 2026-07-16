@@ -7,13 +7,15 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Расчёт Заказов", page_icon="⚙️")
 DAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
-# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ДЛЯ ОЧИСТКИ ПОЛЕЙ ---
+# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ ---
 if 'storage' not in st.session_state: 
     st.session_state.storage = []
 if 'ops_val' not in st.session_state: 
     st.session_state.ops_val = ""
 if 'serials_val' not in st.session_state: 
     st.session_state.serials_val = ""
+if 'search_name' not in st.session_state:
+    st.session_state.search_name = ""
 
 def expand_serial_input(text):
     text = text.strip()
@@ -63,32 +65,46 @@ def generate_excel_bytes(session_data):
 
 # --- СЧЕТЧИК ОБЩЕЙ СУММЫ НА УРОВНЕ ЗАГОЛОВКА ---
 grand_total_now = sum(i['total'] for i in st.session_state.storage)
-
-# Разделяем верхнюю строчку на две колонки: для заголовка и для суммы справа
 header_col, metric_col = st.columns([2, 1])
 with header_col:
     st.title("⚙️ Расчёт заказов")
 with metric_col:
-    # Выводим текущую сумму в правый верхний угол
     st.metric(label="Сумма за смену", value=f"{grand_total_now:,.2f} руб.")
 
 if not os.path.exists('production.db'):
     st.error("Файл 'production.db' не найден!")
 else:
+    # Загружаем из базы список всех уникальных названий
     with sqlite3.connect('production.db') as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT name FROM items")
         db_names = [r[0] for r in cursor.fetchall()]
 
-    # Изделие с возможностью ввода текста и поиска по первым буквам
-    name = st.selectbox("Изделие:", db_names)
-    
-    # Операции и Номера (примеры из placeholder удалены)
+    # Текстовое поле ввода для быстрого написания названия с iPhone
+    input_search = st.text_input("Изделие:", value=st.session_state.search_name)
+
+    # Логика интерактивного всплывающего меню подсказок снизу
+    selected_name = input_search
+    if input_search:
+        # Фильтруем элементы по первым буквам (без учета регистра)
+        filtered_suggestions = [name for name in db_names if name.lower().startswith(input_search.lower())]
+        
+        if filtered_suggestions:
+            st.write("📋 *Выберите вариант из списка ниже:*")
+            # Отображаем подсказки в виде кликабельных кнопок-вариантов
+            for suggestion in filtered_suggestions:
+                if st.button(f"🔹 {suggestion}", key=f"sug_{suggestion}"):
+                    st.session_state.search_name = suggestion
+                    st.rerun()
+        else:
+            st.caption("❌ Ничего не найдено в базе данных по этим буквам.")
+
+    # Поля ввода операций и номеров
     ops_raw = st.text_input("Операции (через запятую):", value=st.session_state.ops_val)
     serials_raw = st.text_input("Номера изделий:", value=st.session_state.serials_val)
 
     if st.button("➕ Рассчитать и добавить", use_container_width=True):
-        if not ops_raw or not serials_raw:
+        if not selected_name or not ops_raw or not serials_raw:
             st.warning("Заполните все поля!")
         else:
             ok, serials, count = expand_serial_input(serials_raw)
@@ -102,7 +118,7 @@ else:
                     for op in ops:
                         cursor.execute(
                             "SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)",
-                            (name, f'{op},%', op))
+                            (selected_name, f'{op},%', op))
                         res = cursor.fetchone()
                         if res: 
                             found.append({
@@ -113,20 +129,21 @@ else:
                             })
 
                 if not found:
-                    st.error("Операции не найдены.")
+                    st.error("Операции не найдены в базе для этого изделия.")
                 else:
                     for o in found:
                         st.session_state.storage.append(
-                            {'name': name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'],
+                            {'name': selected_name, 'drawing': o['drawing'], 'op_num': o['op_num'], 'desc': o['desc'],
                              'price': o['price'], 'serials': serials, 'count': count, 'total': o['price'] * count})
                     
-                    # АВТОМАТИЧЕСКОЕ СТИРАНИЕ ПОЛЕЙ ПОСЛЕ ДОБАВЛЕНИЯ
+                    # Полное автоматическое стирание полей ввода
                     st.session_state.ops_val = ""
                     st.session_state.serials_val = ""
+                    st.session_state.search_name = ""
                     st.success("Успешно добавлено!")
                     st.rerun()
 
-    # --- КНОПКА ПОДРОБНЕЕ (ДАННЫЕ СПРЯТАНЫ ПОД НЕЁ) ---
+    # --- КНОПКА ПОДРОБНЕЕ ---
     if st.session_state.storage:
         st.write("---")
         with st.expander("🔍 Подробнее"):
@@ -144,6 +161,7 @@ else:
             st.session_state.storage = []
             st.session_state.ops_val = ""
             st.session_state.serials_val = ""
+            st.session_state.search_name = ""
             st.rerun()
 
     # --- РЕДАКТОР БАЗЫ ДАННЫХ ---
@@ -151,7 +169,7 @@ else:
     with st.expander("🔐 Редактор базы данных (Добавить новую деталь)"):
         pwd = st.text_input("Пароль администратора:", type="password", key="adm_p")
         if pwd == "1234":
-            add_name = st.text_input("Наименование нового изделия (например: бэшка):").strip()
+            add_name = st.text_input("Наименование нового изделия:").strip()
             add_draw = st.text_input("Номер чертежа:").strip()
             add_desc = st.text_input("Описание (формат: '10, описание_работ'):").strip()
             add_price = st.number_input("Стоимость за единицу (руб):", min_value=0.0, step=0.5, key="adm_pr")
