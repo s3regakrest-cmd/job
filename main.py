@@ -19,7 +19,8 @@ def expand_serial_input(text):
     count, res = 0, []
     for p in parts:
         if '-' in p:
-            s, e = p.split('-')[0].strip(), p.split('-')[1].strip()
+            sub = p.split('-')
+            s, e = sub[0].strip(), sub[1].strip()
             if len(e) < len(s): e = s[:len(s) - len(e)] + e
             count += int(e) - int(s) + 1
             res.append(f"{s}-{e}")
@@ -47,7 +48,7 @@ def generate_excel_bytes(data):
     wb.save(f)
     return f.getvalue()
 
-h_col, m_col = st.columns([3, 1])
+h_col, m_col = st.columns(2)
 h_col.title("⚙️ Расчёт заказов")
 m_col.metric("Сумма за смену", f"{sum(i['total'] for i in st.session_state.storage):,.2f} руб.")
 
@@ -105,7 +106,8 @@ else:
                 found = []
                 with sqlite3.connect('production.db') as conn:
                     for op in ops:
-                        res = conn.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op).fetchone()
+                        # ИСПРАВЛЕНО: добавлена закрывающая скобка перед .fetchone()
+                        res = conn.execute("SELECT drawing_number, work_description, price_per_unit FROM items WHERE LOWER(name)=LOWER(?) AND (work_description LIKE ? OR work_description=?)", (selected_name, f'{op},%', op)).fetchone()
                         if res: found.append({'op_num': op, 'desc': re.sub(r'^\d+\s*,\s*', '', str(res[1])).strip(), 'price': float(res[2]), 'drawing': res[0]})
                 
                 if not found: st.error("Операции не найдены.")
