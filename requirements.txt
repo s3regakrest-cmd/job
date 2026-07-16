@@ -1,2 +1,3 @@
 openpyxl
 streamlit-js-eval
+st-gsheets-connection
